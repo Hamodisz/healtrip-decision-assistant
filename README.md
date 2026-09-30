@@ -77,6 +77,26 @@ Why each step is where it is:
 - **The clinic assistant repeats back and asks for confirmation** before anything is offered, so a misunderstood fact is caught by the patient, not discovered at the clinic.
 - **Selling happens only after a confirmed, non-urgent decision.** It is never shown on emergency paths and never influences which clinic was chosen.
 
+> **Production design note: separate agents, one orchestrator.** In production, **Reception** and each **Clinic Assistant** (Cardiology, Orthopedics, …) would be separate agents, each with its own prompt, tools and permissions. A main orchestrator calls them and hands the conversation over:
+>
+> ```
+>                        ┌──────────────────────────┐
+>   patient ───────────▶ │ Main orchestrator        │  safety check on every message
+>                        └──────────┬───────────────┘
+>              calls ┌──────────────┴───────────────┐ calls
+>                    ▼                              ▼
+>   ┌────────────────────────────┐   ┌──────────────────────────────────────┐
+>   │ Reception agent            │   │ Clinic assistant agent (per clinic)  │
+>   │ tools: lookup_patient,     │   │ tools: search_providers, slots,      │
+>   │        verify_identity     │   │        offers, booking               │
+>   │ sees: identity data only   │   │ sees: verified file summary + facts  │
+>   └────────────────────────────┘   └──────────────────────────────────────┘
+> ```
+>
+> Why separate: each agent gets **least privilege** (reception can't book; the clinic assistant never sees raw identity numbers), smaller focused prompts, and can be tested and changed on its own. Adding a new clinic becomes adding an agent, not growing one prompt.
+>
+> **In this demo they are deliberately NOT separated.** One orchestrator plays both roles, switching by `stage` (`reception → triage → confirm → recommend`), and the API returns `agent: "reception" | "clinic_assistant"` so the UI can show the handoff. The brief asked for a small prototype and one agent; the stage boundaries in `backend/app/agent.py` are where the split would happen.
+
 ---
 
 ## 2. Architecture
