@@ -170,3 +170,18 @@ def test_chat_endpoint_and_rate_limit(client, monkeypatch):
         assert r.status_code == 429 and r.json()["error"]["code"] == "rate_limited"
     finally:
         app.dependency_overrides.clear()
+
+
+def test_missed_answer_gets_one_focused_retry_instead_of_repeating_the_question(db):
+    # Live-run regression (DeepSeek): "لا ما عندي تشخيص" was sometimes not extracted,
+    # so the same question was asked again.
+    s = _decided_session()
+    s.facts.has_diagnosis_to_review = None
+    s.last_ask = ["has_diagnosis_to_review"]
+    s.history = [{"role": "assistant", "content": "هل لديك تشخيص سابق؟"}]
+    llm = FakeLLM(facts(),                                   # full extraction misses the answer
+                  facts(has_diagnosis_to_review=False),       # focused retry catches it
+                  tool("search_providers", city="Riyadh"), text("[DOC-001]"))
+    r = run_turn(db, llm, s, "لا ما عندي تشخيص")
+    assert r.triage.rule_id == "S_CARDIOLOGY"
+    assert any(t.get("step") == "extract_focused_retry" for t in r.trace)

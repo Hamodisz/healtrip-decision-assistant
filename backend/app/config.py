@@ -16,6 +16,7 @@ class Settings(BaseSettings):
     llm_model: str = "claude-haiku-4-5"
     llm_api_key: str = ""
     llm_timeout_s: float = 20.0
+    llm_disable_thinking: bool = False  # DeepSeek/Kimi reason by default and can return empty content
 
     rate_limit_per_minute: int = 20
 

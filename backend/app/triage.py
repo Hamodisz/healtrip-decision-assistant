@@ -9,6 +9,7 @@ pain is handled as an emergency, not a clinic booking). PROTOTYPE RULES, not cli
 Only chest pain is modelled in detail; other complaints route to primary care after the red-flag check.
 """
 from enum import Enum
+from typing import Literal
 
 from pydantic import BaseModel, Field
 
@@ -22,6 +23,11 @@ class Onset(str, Enum):
     today = "today"                # started within the last 24 hours
     days = "days"                  # 1-7 days ago
     weeks_or_more = "weeks_or_more"
+
+
+# Specialties a second opinion can be requested for (matches the provider DB codes; ER is not one).
+ReviewSpecialty = Literal["cardiology", "cardiac_surgery", "internal_medicine", "pulmonology",
+                          "gastroenterology", "orthopedics", "neurology"]
 
 
 class CarePath(str, Enum):
@@ -44,6 +50,7 @@ class PatientFacts(BaseModel):
     sweating_or_nausea: bool | None = None
     pain_spreads: bool | None = None           # to arm, jaw, back or shoulder
     has_diagnosis_to_review: bool | None = None
+    review_specialty: ReviewSpecialty | None = None  # which kind of doctor gave the existing diagnosis
 
 
 class TriageResult(BaseModel):
@@ -67,6 +74,16 @@ def decide(f: PatientFacts) -> TriageResult:
                             reason="Main complaint not known yet", ask_next=["chief_complaint"])
 
     if f.chief_complaint is Complaint.other:
+        # Found in a live run: a patient with an existing diagnosis (e.g. a valve problem, surgery
+        # recommended) and no chest pain was sent to primary care. A diagnosis to review is its own path.
+        if f.has_diagnosis_to_review:
+            if f.review_specialty is None:
+                return TriageResult(care_path=CarePath.need_more_info, rule_id="Q_REVIEW_SPECIALTY",
+                                    reason="Need to know which specialty the diagnosis is from",
+                                    ask_next=["review_specialty"])
+            return TriageResult(care_path=CarePath.second_opinion, rule_id="S_REVIEW_OTHER",
+                                reason=f"Existing {f.review_specialty} diagnosis to be reviewed",
+                                specialty=f.review_specialty, second_opinion=True)
         return TriageResult(care_path=CarePath.routine, rule_id="R_OTHER",
                             reason="Not chest pain and no red flags: start with primary care",
                             specialty="family_medicine")

@@ -40,6 +40,7 @@ class ChatSession:
     emergency_locked: bool = False                     # once emergency, stays emergency
     care_path: CarePath | None = None                  # last decided path: booking is only allowed on bookable paths
     offered_slot_ids: set[int] = field(default_factory=set)   # patient can only confirm a slot we offered
+    last_ask: list[str] = field(default_factory=list)  # fields the previous turn asked about
 
 
 @dataclass
@@ -65,6 +66,8 @@ QUESTIONS = {
                          "أو ألم ينتشر إلى الذراع أو الفك أو الظهر أو الكتف؟"},
     "onset": {"en": "When did the chest pain first start: today, in the last few days, or weeks ago or longer?",
               "ar": "متى بدأ ألم الصدر أول مرة: اليوم، خلال الأيام الماضية، أم قبل أسابيع أو أكثر؟"},
+    "review_specialty": {"en": "Which kind of doctor gave you the diagnosis, for example a cardiologist, a heart surgeon, an orthopedic surgeon or a neurologist?",
+                         "ar": "ما تخصص الطبيب الذي شخّص حالتك، مثل طبيب قلب أو جراح قلب أو جراح عظام أو طبيب أعصاب؟"},
     "has_diagnosis_to_review": {"en": "Have you already been given a diagnosis or treatment plan for this that you'd like another doctor to review?",
                                 "ar": "هل لديك تشخيص أو خطة علاج سابقة لهذه الحالة وتريد أن يراجعها طبيب آخر؟"},
 }
@@ -105,7 +108,9 @@ EXTRACT_TOOL = {"type": "function", "function": {
     "name": "record_facts",
     "description": "Record facts the patient has CLEARLY stated. Leave a field out if not stated. Never guess.",
     "parameters": {"type": "object", "properties": {
-        "chief_complaint": {"type": "string", "enum": ["chest_pain", "other"]},
+        "chief_complaint": {"type": "string", "enum": ["chest_pain", "other"],
+                            "description": "chest_pain if the patient has chest pain/pressure/tightness; "
+                                           "other for ANY other concern, including wanting a second opinion on an existing diagnosis"},
         "pain_now": {"type": "boolean", "description": "Is the chest pain happening right now?"},
         "onset": {"type": "string", "enum": ["today", "days", "weeks_or_more"]},
         "shortness_of_breath": {"type": "boolean"},
@@ -113,6 +118,9 @@ EXTRACT_TOOL = {"type": "function", "function": {
         "sweating_or_nausea": {"type": "boolean"},
         "pain_spreads": {"type": "boolean", "description": "Pain spreads to arm, jaw, back or shoulder"},
         "has_diagnosis_to_review": {"type": "boolean", "description": "Has an existing diagnosis/treatment plan to be reviewed"},
+        "review_specialty": {"type": "string", "enum": ["cardiology", "cardiac_surgery", "internal_medicine", "pulmonology",
+                                                         "gastroenterology", "orthopedics", "neurology"],
+                             "description": "Specialty of the doctor who made the existing diagnosis (heart/valve → cardiology)"},
         "city": {"type": "string", "description": "City the patient wants care in, in English"},
         "country": {"type": "string", "description": "ISO-2 country code"},
         "language": {"type": "string", "description": "ISO-639-1 language the patient wants the doctor to speak"},
@@ -147,6 +155,26 @@ def extract(llm: LLM, s: ChatSession) -> None:
                 _merge_facts(s, json.loads(call["function"]["arguments"] or "{}"))
             except Exception:  # malformed extraction: keep previous facts, rules will ask again
                 log.warning("extraction_rejected session=%s", s.id)
+
+
+def extract_focused(llm: LLM, s: ChatSession, fields: list[str], question: str, answer: str) -> None:
+    """Retry for ONE question only. Found in live runs: the full extraction occasionally leaves out
+    a field the patient clearly answered (e.g. "لا ما عندي تشخيص"), and the same question gets
+    asked again. A narrow call (just the question, the answer and the asked fields) is cheap and
+    much harder to get wrong."""
+    props = {k: v for k, v in EXTRACT_TOOL["function"]["parameters"]["properties"].items() if k in fields}
+    tool = {"type": "function", "function": {"name": "record_facts", "description": "Record the patient's answer.",
+                                             "parameters": {"type": "object", "properties": props}}}
+    msgs = [{"role": "system", "content": "The assistant asked the patient a question and the patient answered. "
+                                          "Record the answer for the listed fields only. A plain 'no'/'لا'/'none' "
+                                          "to a grouped question means false for every field. Do not guess."},
+            {"role": "user", "content": f"Question: {question}\nAnswer: {answer}"}]
+    out = llm.chat(msgs, tools=[tool], tool_choice={"type": "function", "function": {"name": "record_facts"}})
+    for call in out.get("tool_calls") or []:
+        try:
+            _merge_facts(s, {k: v for k, v in json.loads(call["function"]["arguments"] or "{}").items() if k in fields})
+        except Exception:
+            log.warning("focused_extraction_rejected session=%s", s.id)
 
 
 # ── Output checks ──
@@ -196,8 +224,17 @@ def run_turn(db: Session, llm: LLM, s: ChatSession, message: str, lang_hint: str
         trace.append({"step": "extract_facts", "error": "llm_unavailable"})
         return _finish(s, TurnResult(reply=AI_DOWN[lang], language=lang, triage=None, trace=trace))
 
-    # 3. Decide (code).
+    # 3. Decide (code). If the rules ask the SAME question again, the answer was probably missed:
+    #    one focused extraction for just that question, then decide again.
     result = decide(s.facts)
+    if result.care_path is CarePath.need_more_info and result.ask_next == s.last_ask and len(s.history) >= 2:
+        try:
+            extract_focused(llm, s, result.ask_next, s.history[-2]["content"], message)
+            result = decide(s.facts)
+            trace.append({"step": "extract_focused_retry", "fields": s.last_ask, "facts": s.facts.model_dump(exclude_none=True)})
+        except LLMUnavailable:
+            pass
+    s.last_ask = result.ask_next
     trace.append({"step": "triage", "care_path": result.care_path.value, "rule": result.rule_id, "ask_next": result.ask_next})
 
     # 4a. Emergency / urgent.

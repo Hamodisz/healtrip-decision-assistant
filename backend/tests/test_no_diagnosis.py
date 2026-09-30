@@ -32,3 +32,30 @@ def test_diagnosis_or_treatment_is_blocked(reply):
 def test_routing_language_passes_unchanged(reply):
     shown, blocked = enforce(reply)
     assert shown == reply and blocked == []
+
+
+@pytest.mark.parametrize(
+    "reply",
+    [
+        "This is not an emergency situation, so you don't need the ER right now. See [DOC-001].",
+        "Nothing to worry about, a cardiologist can see you next week.",
+        "حالتك ليست طارئة ولا داعي للقلق.",
+    ],
+)
+def test_false_reassurance_is_blocked(reply):
+    # Found in a live DeepSeek run: the rules chose "specialist", but the model added
+    # "you don't need the ER". The system can't promise that; only fixed safety text speaks to urgency.
+    assert enforce(reply)[1]
+
+
+def test_our_own_fixed_questions_are_never_blocked():
+    # Found in a live run: the word "diagnosis" in our OWN question was blocked.
+    from app.agent import QUESTIONS
+    for q in QUESTIONS.values():
+        for lang, text in q.items():
+            assert enforce(text, lang) == (text, []), text
+
+
+def test_arabic_not_the_er_reassurance_is_blocked():
+    # Live-run regression (DeepSeek, Arabic): "…تقييم من طبيب قلب، وليس الطوارئ"
+    assert enforce("الخطوة المناسبة لحالتك هي تقييم من طبيب قلب، وليس الطوارئ", "ar")[1]

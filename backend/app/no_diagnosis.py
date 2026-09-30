@@ -18,9 +18,15 @@ _PATTERNS = (
     r"pulmonary embolism|pneumonia|anxiety attack|panic attack|muscle strain|dissection)\b",
     r"(ذبحه|جلطه|احتشاء|ارتجاع|التهاب (ال)?(غضروف|تامور|رئه)|نوبه (قلبيه|هلع)|شد عضلي|قولون)",
     # Guessing the cause / diagnosing language
+    # (asking "have you been given a diagnosis?" is fine; stating one is not)
     r"\b(you (probably|likely|might|may) have|it (is|'s) (probably|likely)|sounds like|consistent with|"
-    r"i (think|suspect|believe) (it|you|this)|diagnos(is|e|ed))\b",
-    r"(غالبا|على الارجح|يبدو ان(ه|ها)?|اعتقد ان(ه|ها|ك)?|تشخيص|عندك (مرض|حاله))",
+    r"i (think|suspect|believe) (it|you|this)|(my|the|your) diagnosis is|i (would )?diagnose)\b",
+    r"(غالبا|على الارجح|يبدو ان(ه|ها)?|اعتقد ان(ه|ها|ك)?|(تشخيصك|التشخيص) (هو|هي)|عندك (مرض|حاله))",
+    # False reassurance: the assistant can't promise a patient is safe. Safety wording is fixed text only.
+    r"\b(not (an |a |the )?(emergency|serious|urgent|er)|(don'?t|do not) need (the |an |to go to the )?(er|emergency)|"
+    r"nothing to worry|you('re| are) (fine|safe|ok))\b",
+    r"(ليس(ت)? (حاله )?طارئ|ليس(ت)? خطير|لا (داعي|حاجه) (للقلق|للطوارئ|لقسم الطوارئ)|انت بخير|"
+    r"(وليس|ليس|مو|مش|لا) (ال)?طوارئ|(ما|لا) (تحتاج|يحتاج) (ل)?(ال)?طوارئ)",
     # Treatment / medication advice
     r"\b(take|try) (an? )?(aspirin|ibuprofen|paracetamol|nitroglycerin|antacid|painkiller|medication)\b",
     r"(خذ|تناول|استخدم) (حبه|حبوب|دواء|اسبرين|بنادول|مسكن)",

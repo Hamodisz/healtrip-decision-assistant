@@ -110,3 +110,12 @@ def test_triage_endpoint(client):
     assert body["triage"]["care_path"] == "emergency" and "997" in body["safety_message"]
     assert client.post("/api/v1/triage", json={"facts": {"pain_now": "maybe"}}).status_code == 422
     assert client.post("/api/v1/triage", json={"message": "x" * 2001}).status_code == 422
+
+
+def test_second_opinion_without_chest_pain():
+    # Live-run regression: "my cardiologist diagnosed a valve problem, I want a second opinion"
+    # was asked "what is the main concern?" 3 times and then sent to primary care.
+    f = PatientFacts(chief_complaint=Complaint.other, has_diagnosis_to_review=True)
+    assert decide(f).ask_next == ["review_specialty"]
+    r = decide(PatientFacts(chief_complaint=Complaint.other, has_diagnosis_to_review=True, review_specialty="cardiology"))
+    assert (r.care_path, r.specialty, r.second_opinion) == (CarePath.second_opinion, "cardiology", True)
