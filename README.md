@@ -21,6 +21,8 @@ The assistant does **not** answer "see a cardiologist." It:
 4. Only if the path allows it, calls tools that search a real provider database.
 5. Presents options that exist in the database, and nothing else.
 
+**It routes; it never diagnoses.** The assistant never names a condition ("sounds like angina"), guesses a cause, or suggests medication. Its only output is *which kind of care to go to* and *which real doctors can see you*. Only a doctor diagnoses.
+
 HealTrip describes its model as **Decision-First Healthcare**: the right decision comes before the booking. This prototype is built around that idea: *decide safely, then discover providers.*
 
 The engineering principle throughout:
@@ -72,7 +74,7 @@ The engineering principle throughout:
 | Choosing the care path (ER / urgent / specialist / routine / second opinion) | **Deterministic code** | Safety-critical. Must be testable and repeatable, never an LLM confidence score |
 | Which tools may be called | **Tool gateway (code)** | e.g. emergency path: no doctor search, only ER hospitals |
 | Provider facts (names, hospitals, languages, fees) | **Database via tools** | The model has no provider knowledge of its own that we trust |
-| The final sentence the patient reads | **LLM**, then a **grounding check** | Natural language, but only about data that was returned |
+| The final sentence the patient reads | **LLM**, then two **code checks**: grounding + no-diagnosis | Natural language, but only about returned data, and never a diagnosis or treatment advice |
 
 Planned `PatientFacts` (what the LLM extracts; the triage layer consumes):
 
@@ -149,6 +151,8 @@ curl -X POST localhost:8000/api/v1/triage -H 'Content-Type: application/json' \
 ```
 
 Rules are conservative (they over-triage rather than under-triage), listed in one file, unit-tested in both languages, and **documented as prototype rules, not clinical guidance**. A real deployment needs clinician-authored and clinically validated rules.
+
+**No diagnosis, enforced in code** (`backend/app/no_diagnosis.py`, ✅): every LLM reply is checked before the patient sees it. A reply that names a condition (angina, reflux, ذبحة, ارتجاع…), guesses a cause ("it's probably…", "يبدو أنه…") or suggests medication ("take an aspirin", "خذ حبة…") is blocked and replaced with a fixed message: *"I can't tell you what is causing your symptoms. Only a doctor can assess that. What I can do is help you reach the right kind of doctor."* A prompt instruction alone isn't enough, because models drift into diagnosing when they try to be helpful.
 
 Why the LLM isn't trusted here: it isn't that LLMs are always worse at triage. Published results are mixed, and one study found ChatGPT recognised high-acuity patients better than triage nurses ([JMIR 2024](https://doaj.org/article/3e9c85a398b543bab44f5293f804c800)). The problem is **repeatability and auditability**: another study found ChatGPT's triage had poor repeatability, with 47.5% accuracy and a 13.7% under-triage rate on simulated patients ([Emergency Care Journal](https://www.pagepressjournals.org/ecj/article/download/15130/14090/101289)). A safety decision must give the same answer every time and be testable line by line, and `if pain_now: EMERGENCY` is.
 
@@ -290,7 +294,7 @@ Deliberately small: a demo that makes the engineering decisions visible, not a p
 | # | Milestone | Status |
 |---|---|---|
 | M1 | Data foundation: PostgreSQL schema, mock network, provider API | ✅ done |
-| M2 | **Safety / triage layer**: red-flag pre-check + care-path rules (AR/EN), unit-tested | ✅ done (43 tests total) |
+| M2 | **Safety / triage layer**: red-flag pre-check + care-path rules (AR/EN), unit-tested | ✅ done (54 tests total) |
 | M3 | **AI agent + tools**: fact extraction, relevant questions, `search_providers` / `get_*_details`, grounding check, failure handling | ⏳ next |
 | M4 | Chat UI (Arabic / English) | ⬜ |
 | M5 | Simple booking: patient confirms → ticket number from the DB | ⬜ |
