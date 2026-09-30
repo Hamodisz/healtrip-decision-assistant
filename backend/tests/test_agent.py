@@ -253,3 +253,13 @@ def test_question_turns_cannot_mention_providers_either(db):
     s = ChatSession(facts=agent.PatientFacts(chief_complaint="chest_pain"))
     r = run_turn(db, FakeLLM(facts(), text("Dr. Sami at Al Noor Hospital can help. Is the pain happening now?")), s, "chest pain")
     assert "Sami" not in r.reply and "Noor" not in r.reply and "happening right now" in r.reply
+
+
+def test_patient_asking_for_a_doctor_not_in_the_database_gets_an_honest_answer(db):
+    # Live DeepSeek finding: the model's "Dr. X is not in our network" repeated the invented name,
+    # was (correctly) blocked, and the fallback ignored the patient's question.
+    llm = FakeLLM(facts(), tool("search_providers", city="Riyadh"),
+                  text("Dr. Ahmed Al-Zahrani is not in our network, but [DOC-001] is."))
+    r = run_turn(db, llm, _decided_session(), "Can I book with Dr. Ahmed Al-Zahrani at King Faisal Specialist Hospital?")
+    assert r.reply.startswith("I can only book doctors in the HealTrip network")
+    assert "Al-Zahrani" not in r.reply and [p["doctor_id"] for p in r.providers] == ["DOC-001"]

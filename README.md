@@ -34,6 +34,39 @@ The engineering principle throughout:
 
 ---
 
+## How this prototype stops the AI from inventing information
+
+**The rule:** the AI can only talk about what the database returned in this conversation. The data here is mock data, but it's *the* source of truth: the check isn't "does this doctor exist in the real world?", it's **"did this come from our database?"**. Mock doctors pass; anything the model makes up beyond the database is blocked.
+
+It's enforced in **code**, in five layers, not by asking the model nicely in a prompt:
+
+| # | Layer | What it means in practice |
+|---|---|---|
+| 1 | **No knowledge path except tools** | The model has no provider list in its prompt. The only way to get a doctor, hospital or time is a tool call that runs a real DB query (`backend/app/tools.py`). |
+| 2 | **Code owns the clinical choice** | The care path and specialty come from deterministic rules (`triage.py`). The model can't change the specialty it searches for; the tool gateway overrides it. |
+| 3 | **IDs only, names come from the database** | The model may refer to a provider only as `[DOC-001]`. The UI replaces the ID with the name from the DB card in the same response, and cards are DB rows, never model text. |
+| 4 | **Every reply is checked before the patient sees it** | IDs must come from this conversation's tool results; any doctor/hospital *name* written by the model is rejected (EN + AR); no diagnosis; no false reassurance; no "you're booked". A rejected reply is replaced with fixed text built from DB data (`agent.py`, `no_diagnosis.py`). |
+| 5 | **Facts that matter are never generated** | Ticket numbers come from a Postgres sequence; open times are DB rows; the patient's file summary is a template filled from DB fields; emergency messages are fixed text. |
+
+**Real example** (live DeepSeek run, after the patient's path was decided):
+
+| Patient asks for someone who isn't in the database | What the patient sees |
+|---|---|
+| *"Can I book with Dr. Ahmed Al-Zahrani at King Faisal Specialist Hospital instead?"* | *"I can only book doctors in the HealTrip network, and I couldn't find that doctor or hospital in it. These are matching options from the HealTrip provider network:"* + card: **Dr. Faisal Al-Harbi** (from the DB) |
+| *"أبغى الدكتور خالد العمري في مستشفى الحبيب، هل هو متاح؟"* | *"أستطيع الحجز فقط مع أطباء شبكة HealTrip، ولم أجد هذا الطبيب أو المستشفى فيها…"* + the same DB card |
+
+The model's own answer repeated the invented name, so layer 4 rejected it and the fixed text answered the patient's actual question. Neither name was ever shown as an available provider.
+
+**Try it yourself** on the [live demo](https://healtrip-demo.vercel.app): get to the doctor cards, then ask for any doctor or hospital that isn't in the mock data. Expand *"How this answer was produced"* to see `blocked: ["ungrounded_provider_reference"]`.
+
+**Proven by tests**, not just claimed: the agent tests use a scripted fake LLM that deliberately misbehaves: it invents `DOC-099`, invents names in English and Arabic, claims three doctors in Tokyo when the DB found none, announces a booking, diagnoses "angina", and tries to search orthopedics instead of cardiology. Every case has a test, and I checked that the tests **fail when the guard is switched off** (then restored it).
+
+**Why code, not prompts:** building my own AI product (SportSyncAI) taught me that a prompt rule doesn't hold once a model is confident. A rule written in the prompt *and* repeated was still broken in live tests, so every rule that could break the product became a code gate with a deterministic fallback, plus a separate verification step that never lets an unchecked answer through when the checker itself fails. Live testing of this prototype showed the same thing again: told "don't thank the patient", the model still did; told to stay on the decided path, it still added "you don't need the ER". Each of those became a code check with a regression test (see *Engineering notes* below).
+
+**Production next steps:** an independent verifier pass (a second model call that checks every claim in the reply against the tool results before it's shown), logging and weekly review of every blocked reply, and a fixed Arabic/English evaluation set run on every prompt or model change.
+
+---
+
 ## Patient workflow (how a hospital reception works)
 
 The assistant follows the same path as a real hospital front desk, with safety checked before any paperwork:

@@ -113,6 +113,8 @@ OFFERS_NOTE = {"en": " Optional services that fit this visit are shown below.",
                "ar": " تظهر بالأسفل خدمات اختيارية تناسب هذه الزيارة."}
 OPTIONS_TEXT = {"en": " These are matching options from the HealTrip provider network:",
                 "ar": " هذه خيارات مطابقة من شبكة مقدمي الخدمة في HealTrip:"}
+NOT_IN_NETWORK = {"en": "I can only book doctors in the HealTrip network, and I couldn't find that doctor or hospital in it.",
+                  "ar": "أستطيع الحجز فقط مع أطباء شبكة HealTrip، ولم أجد هذا الطبيب أو المستشفى فيها."}
 NO_RESULTS = {"en": "I couldn't find a matching provider in the current HealTrip provider database.",
               "ar": "لم أجد مقدم خدمة مطابقًا في قاعدة بيانات HealTrip الحالية."}
 DB_DOWN = {"en": "I'm unable to access the provider database right now. Please try again later.",
@@ -455,7 +457,10 @@ def _recommend(db, llm, s, lang, result, trace) -> TurnResult:
             text = fallback
         elif not grounded(text, gw, s):
             blocked = ["ungrounded_provider_reference"]
-            text = fallback
+            # If the PATIENT asked for a provider by name, answer that question honestly (fixed text)
+            # instead of silently changing the subject.
+            asked_by_name = names_a_provider(s.history[-1]["content"]) if s.history else False
+            text = (NOT_IN_NETWORK[lang] + OPTIONS_TEXT[lang]) if asked_by_name else fallback
     s.known_doctor_ids |= set(gw.doctors)
     s.offered_slot_ids |= set(gw.slots)
     offer_cards = []
