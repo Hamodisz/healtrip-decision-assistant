@@ -8,7 +8,7 @@ from fastapi.responses import JSONResponse
 from sqlalchemy import text
 from sqlalchemy.exc import SQLAlchemyError
 
-from app.api import providers, triage
+from app.api import chat, providers, triage
 from app.config import get_settings
 from app.db import engine
 
@@ -39,7 +39,8 @@ def _error(status: int, code: str, message: str, request_id: str | None = None) 
 
 @app.exception_handler(HTTPException)
 async def http_error(_: Request, exc: HTTPException):
-    return _error(exc.status_code, "not_found" if exc.status_code == 404 else "http_error", str(exc.detail))
+    code = {404: "not_found", 429: "rate_limited", 503: "unavailable"}.get(exc.status_code, "http_error")
+    return _error(exc.status_code, code, str(exc.detail))
 
 
 @app.exception_handler(RequestValidationError)
@@ -71,3 +72,4 @@ def health():
 
 app.include_router(providers.router)
 app.include_router(triage.router)
+app.include_router(chat.router)

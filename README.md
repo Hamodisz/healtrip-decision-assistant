@@ -100,13 +100,36 @@ Planned `PatientFacts` (what the LLM extracts; the triage layer consumes):
 
 ---
 
-## 4. Tool Calling _(planned: M3)_
+## 4. Tool Calling (✅ M3)
 
 | Tool | Input | Output | Allowed when |
 |---|---|---|---|
 | `search_providers` | `specialty`, `city?`, `country?`, `language?`, `second_opinion?`, `remote?` | list of `{doctor_id, doctor_name, specialty, hospital_id, hospital_name, city, languages}` | care path ∈ specialist, routine, second opinion |
 | `get_doctor_details` | `doctor_id` | full doctor row + hospital | a `doctor_id` returned earlier in this conversation |
 | `get_hospital_details` | `hospital_id` | full hospital row | any non-emergency path; emergency path: only `has_emergency = true` hospitals |
+
+The agent (`backend/app/agent.py`) is one orchestrator whose steps are fixed by code:
+
+```
+message ─▶ ① red-flag pre-check ──(hit)──▶ fixed emergency reply + ER hospitals from DB   [no LLM]
+             │
+             ▼
+           ② LLM: record_facts (forced tool call, schema-validated)  →  PatientFacts
+             ▼
+           ③ triage.decide(facts)                                       [code]
+             ├─ emergency / urgent ─▶ fixed reply + ER hospitals from DB [no LLM text]
+             ├─ need more info ─────▶ LLM phrases the question the rules asked for
+             └─ path decided ───────▶ LLM calls search_providers / get_*_details via the gateway
+                                        ▼
+           ④ output checks: no-diagnosis + grounding  ─▶  reply + provider cards (DB rows) + trace
+```
+
+The **tool gateway** (`backend/app/tools.py`) sits between the model and the database:
+- `search_providers` is refused on emergency/urgent paths.
+- `specialty` and `second_opinion` are **set by the triage rules and can't be changed by the model**. The model only chooses city/country/language filters.
+- `get_doctor_details` only works for doctors already returned in this conversation; `get_hospital_details` only for their hospitals.
+
+The LLM client (`backend/app/llm.py`) speaks the OpenAI-compatible API, so Anthropic, Groq, Gemini or OpenAI is a `.env` change, not a code change.
 
 Tool inputs are validated with Pydantic **before** any query; invalid parameters are rejected and reported back to the model as a structured tool error, never passed to the DB. Tools call the same repository layer as the REST API.
 
@@ -158,7 +181,7 @@ Why the LLM isn't trusted here: it isn't that LLMs are always worse at triage. P
 
 ---
 
-## 6. Hallucination Prevention _(planned: M3–M4; enforced architecturally, not by prompt)_
+## 6. Hallucination Prevention (✅ M3, enforced architecturally, not by prompt)
 
 | Risk | Guard |
 |---|---|
@@ -212,7 +235,7 @@ UNIQUE (doctor_id, starts_at) · CHECK status/mode · INDEX (doctor_id, status, 
 | GET | `/api/v1/doctors/{id}` | ✅ |
 | GET | `/api/v1/doctors/{id}/slots?days=&mode=` | ✅ |
 | POST | `/api/v1/triage` (message + structured facts → care path; no LLM) | ✅ |
-| POST | `/api/v1/chat` (conversation turn) | planned (M3) |
+| POST | `/api/v1/chat` (`{session_id?, message, language?}` → reply, care path, provider cards, trace) | ✅ |
 
 Interactive OpenAPI docs: `http://localhost:8000/docs`.
 
@@ -226,9 +249,9 @@ Interactive OpenAPI docs: `http://localhost:8000/docs`.
 - Secrets in environment variables; the AI key lives only in the backend, never in the frontend
 - CORS allow-list (never `*`)
 - The database is reachable only through the backend
-- Tool authorisation per care path _(M3)_
-- Simple per-client rate limit on `/chat` _(M3)_
-- No patient accounts, and no conversation stored beyond the session; logs record event types and IDs, not symptom text _(M3)_
+- Tool authorisation per care path ✅
+- Simple per-client rate limit on `/chat` (20/min, in memory) ✅
+- No patient accounts, and no conversation stored beyond the session; logs record event types and IDs, not symptom text ✅
 
 **Required before production (not done here):** authentication and consent, encryption at rest, audit logging, data-residency review (Saudi PDPL / NCA controls), an **SFDA regulatory assessment** (software that guides clinical decisions may count as a medical device under [SFDA MDS-G010](https://www.sfda.gov.sa/en/guide/guidance-artificial-intelligence-and-machine-learning-aiml-enabled-medical-devices-mds-%E2%80%93-g010)), clinician-validated triage rules and clinical governance, BAAs/DPAs with the LLM provider, penetration testing, and monitoring. **This prototype claims no regulatory compliance.**
 
@@ -242,9 +265,9 @@ One error shape everywhere: `{"error": {"code", "message", "request_id?"}}`. Sta
 |---|---|
 | Invalid input | `422 invalid_input`, rejected before any query ✅ |
 | Unknown doctor / hospital | `404 not_found` ✅ |
-| DB unavailable | `503 database_unavailable`; the chat says it can't reach the provider database, and fabricates nothing ✅ (API) / M3 (chat) |
-| AI provider down / timeout | one retry, then *"The AI service is temporarily unavailable."* The red-flag pre-check still runs _(M3)_ |
-| No matching provider | explicit "no matching provider in the current database" _(M3)_ |
+| DB unavailable | `503 database_unavailable`; the chat says it can't reach the provider database, and fabricates nothing ✅ |
+| AI provider down / timeout | one retry, then *"The AI service is temporarily unavailable… if you feel unwell now, call 997."* The red-flag pre-check still runs ✅ |
+| No matching provider | explicit "no matching provider in the current database", even if the model claims otherwise ✅ |
 | Emergency | provider discovery stops; fixed emergency message ✅ |
 
 ---
@@ -295,7 +318,7 @@ Deliberately small: a demo that makes the engineering decisions visible, not a p
 |---|---|---|
 | M1 | Data foundation: PostgreSQL schema, mock network, provider API | ✅ done |
 | M2 | **Safety / triage layer**: red-flag pre-check + care-path rules (AR/EN), unit-tested | ✅ done (54 tests total) |
-| M3 | **AI agent + tools**: fact extraction, relevant questions, `search_providers` / `get_*_details`, grounding check, failure handling | ⏳ next |
+| M3 | **AI agent + tools**: fact extraction, relevant questions, `search_providers` / `get_*_details`, grounding check, failure handling | ✅ code + 66 tests (scripted LLM); live-model run pending |
 | M4 | Chat UI (Arabic / English) | ⬜ |
 | M5 | Simple booking: patient confirms → ticket number from the DB | ⬜ |
 | M6 | README examples (normal, emergency, provider search) + demo link | ⬜ |
