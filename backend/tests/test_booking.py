@@ -99,3 +99,37 @@ def test_model_cannot_announce_a_booking_or_invent_a_ticket(client):
     body = _chat(client, s, "book the first time", FakeLLM(
         facts(), tool("get_available_slots", doctor_id="DOC-001"), text("Done! You're booked, ticket HT-2026-999999.")))
     assert "HT-2026-999999" not in body["reply"] and "Confirm" in body["reply"]
+
+
+def test_booking_notifies_doctor_and_hospital_without_symptoms(client):
+    s = _decided_session_in_store()
+    _chat(client, s, "Riyadh", FakeLLM(facts(city="Riyadh"), tool("search_providers", city="Riyadh"), text("[DOC-001]")))
+    body = _chat(client, s, "times?", FakeLLM(facts(), tool("get_available_slots", doctor_id="DOC-001"), text("Tap Confirm.")))
+    b = client.post("/api/v1/bookings", json={"session_id": s.id, "slot_id": body["slots"][1]["slot_id"]}).json()
+
+    inbox = [n for n in client.get("/api/v1/hospital/inbox", params={"doctor_id": "DOC-001"}).json()
+             if n["ticket_number"] == b["ticket_number"]]
+    assert {n["channel"] for n in inbox} == {"doctor_email", "hospital_system"}
+    assert all(n["status"] == "sent" for n in inbox)
+    assert all("chest" not in n["body"].lower() for n in inbox)  # no symptoms leave the conversation
+    assert "notified" in b["reply"]
+
+
+def test_rolled_back_booking_notifies_no_one():
+    from sqlalchemy import func, select
+
+    from app import notifications
+    from app.models import Notification
+    with SessionLocal() as db:
+        before = db.scalar(select(func.count(Notification.id)))
+        slot_id = repo.available_slots(db, "DOC-007", limit=1)[0].id
+    try:
+        with SessionLocal() as db, db.begin():
+            b = repo.book_slot(db, slot_id)
+            notifications.enqueue_for_booking(db, b)
+            raise RuntimeError("crash after booking, before commit")
+    except RuntimeError:
+        pass
+    with SessionLocal() as db:
+        assert db.scalar(select(func.count(Notification.id))) == before
+        assert slot_id in {x.id for x in repo.available_slots(db, "DOC-007", limit=20)}

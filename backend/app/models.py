@@ -114,3 +114,29 @@ class Booking(Base):
 
     slot: Mapped[Slot] = relationship()
     doctor: Mapped[Doctor] = relationship()
+
+
+class Notification(Base):
+    """Transactional outbox. Rows are written in the SAME transaction as the booking, so a booking
+    can't exist without its notifications, and a rolled-back booking notifies no one.
+    A sender (here: a mock) delivers pending rows and retries failures.
+
+    Privacy: notifications carry time + ticket only, never the patient's symptoms."""
+
+    __tablename__ = "notifications"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    booking_id: Mapped[int] = mapped_column(ForeignKey("bookings.id"), index=True)
+    channel: Mapped[str] = mapped_column(String(20))       # doctor_email | hospital_system
+    recipient: Mapped[str] = mapped_column(String(120))
+    subject: Mapped[str] = mapped_column(String(200))
+    body: Mapped[str] = mapped_column(String(1000))
+    status: Mapped[str] = mapped_column(String(10), default="pending")
+    attempts: Mapped[int] = mapped_column(Integer, default=0)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=text("now()"))
+    sent_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+
+    __table_args__ = (
+        CheckConstraint("channel IN ('doctor_email','hospital_system')", name="ck_notification_channel"),
+        CheckConstraint("status IN ('pending','sent','failed')", name="ck_notification_status"),
+    )

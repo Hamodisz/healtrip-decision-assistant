@@ -227,9 +227,31 @@ fixed-template reply: "Your appointment is booked. Your ticket number is HT-2026
 
 No patient identity is stored: the ticket is what the patient presents. Production would link a verified patient record, with consent.
 
-### Notifying the doctor / hospital (design only, not built)
+### Notifying the doctor / hospital (✅ mocked end-to-end)
 
-A booking isn't finished until the hospital knows about it. In production:
+A booking isn't finished until the doctor and the hospital know about it. The demo builds the real pattern with a **mock sender** (nothing leaves the machine):
+
+- In the **same transaction** as the booking, two outbox rows are written: a **doctor email** and a **hospital-system message** shaped as a FHIR `Appointment`.
+- After commit, a mock sender marks them `sent` and logs them. `GET /api/v1/hospital/inbox?doctor_id=DOC-001` shows exactly what the doctor and the hospital received.
+- **Privacy:** notifications contain the time, place and ticket, never the patient's symptoms.
+- Tested: a booking that rolls back produces **no** notifications, and its slot stays open.
+
+Example: what Dr. Faisal Al-Harbi (DOC-001) receives:
+
+```
+To: doc-001@hosp-001.demo-hospital.example
+Subject: New appointment HT-2026-000005: Thu 01 Oct 2026, 15:00
+A new in-person visit has been booked through HealTrip.
+Ticket: HT-2026-000005 · Time: 15:00 (Asia/Riyadh) · Demo Riyadh Heart Institute, 12 Demo King Fahd Rd
+```
+and the hospital system receives:
+```json
+{"resourceType":"Appointment","status":"booked","identifier":"HT-2026-000005",
+ "start":"2026-10-01T12:00:00+00:00","minutesDuration":30,
+ "participant":["Practitioner/DOC-001","Location/HOSP-001"]}
+```
+
+In production the mock sender becomes a background worker calling a real email provider and the hospital's HIS:
 
 ```
 booking INSERT  +  outbox row "booking.confirmed"      ← same DB transaction (transactional outbox)
@@ -268,10 +290,14 @@ id PK · doctor_id FK → doctors · starts_at (timestamptz) · duration_min
 mode (in_person | remote) · status (open | held | booked) · held_until
 UNIQUE (doctor_id, starts_at) · CHECK status/mode · INDEX (doctor_id, status, starts_at)
 
-bookings (M5)
-────────
+bookings (M5)                                   notifications (M5, outbox)
+────────                                        ─────────────
+
 id PK · ticket_number UNIQUE, DEFAULT 'HT-' || year || '-' || lpad(nextval('ticket_seq'), 6, '0')
 slot_id UNIQUE FK → slots · doctor_id FK → doctors · created_at
+
+notifications: id · booking_id FK → bookings · channel (doctor_email | hospital_system)
+               recipient · subject · body · status (pending | sent | failed) · attempts · sent_at
 ```
 
 - **Cross-border by design** (`country`, `timezone`, `languages`, `currency`, `offers_remote_consult`): a patient in Riyadh can get a remote second opinion from Berlin before deciding to travel.
@@ -295,6 +321,7 @@ slot_id UNIQUE FK → slots · doctor_id FK → doctors · created_at
 | POST | `/api/v1/triage` (message + structured facts → care path; no LLM) | ✅ |
 | POST | `/api/v1/chat` (`{session_id?, message, language?}` → reply, care path, provider cards, open times, trace) | ✅ |
 | POST | `/api/v1/bookings` (`{session_id, slot_id}` → DB ticket number; called by the patient's Confirm, never the model) | ✅ |
+| GET | `/api/v1/hospital/inbox?doctor_id=` (**demo only**: what the doctor/hospital received) | ✅ |
 
 Interactive OpenAPI docs: `http://localhost:8000/docs`.
 
@@ -379,7 +406,7 @@ Deliberately small: a demo that makes the engineering decisions visible, not a p
 | M2 | **Safety / triage layer**: red-flag pre-check + care-path rules (AR/EN), unit-tested | ✅ done (54 tests total) |
 | M3 | **AI agent + tools**: fact extraction, relevant questions, `search_providers` / `get_*_details`, grounding check, failure handling | ✅ code + 66 tests (scripted LLM); live-model run pending |
 | M4 | Chat UI (Arabic / English) | ⬜ |
-| M5 | Booking: real open times → patient confirms → DB ticket number | ✅ done (72 tests total) |
+| M5 | Booking: real open times → patient confirms → DB ticket number | ✅ done, incl. mocked doctor/hospital notification (74 tests total) |
 | M6 | README examples (normal, emergency, provider search) + demo link | ⬜ |
 
 ---

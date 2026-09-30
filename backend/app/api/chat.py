@@ -6,7 +6,7 @@ from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session
 
-from app import repository as repo
+from app import notifications, repository as repo
 from app.agent import BOOKABLE, ChatSession, run_turn
 from app.tools import doctor_card, slot_card
 from app.config import get_settings
@@ -87,11 +87,14 @@ class BookingResponse(BaseModel):
     reply: str
     doctor: dict
     slot: dict
+    doctor_notified: bool = True     # mock: see GET /api/v1/hospital/inbox
 
 
 BOOKED_TEXT = {
-    "en": "Your appointment is booked. Your ticket number is {ticket}. Please show it at {hospital} on {time}.",
-    "ar": "تم حجز موعدك. رقم التذكرة: {ticket}. يُرجى إبرازه في {hospital} بتاريخ {time}.",
+    "en": "Your appointment is booked. Your ticket number is {ticket}. Please show it at {hospital} on {time}. "
+          "The doctor and the hospital have been notified.",
+    "ar": "تم حجز موعدك. رقم التذكرة: {ticket}. يُرجى إبرازه في {hospital} بتاريخ {time}. "
+          "تم إشعار الطبيب والمستشفى.",
 }
 
 
@@ -111,11 +114,16 @@ def confirm_booking(req: BookingRequest, db: Annotated[Session, Depends(get_sess
     try:
         with db.begin():
             booking = repo.book_slot(db, req.slot_id)
+            notifications.enqueue_for_booking(db, booking)   # same transaction: outbox
             doctor = repo.get_doctor(db, booking.doctor_id)
             slot, ticket = slot_card(booking.slot, doctor), booking.ticket_number
             card = doctor_card(doctor)
     except repo.SlotUnavailable:
         raise HTTPException(status_code=409, detail="Sorry, this time was just taken. Please choose another.")
+    try:
+        notifications.deliver_pending(db)
+    except Exception:  # booking is saved; pending notifications are retried by the next delivery run
+        pass
     lang = "ar" if s.history and any("\u0600" <= c <= "\u06ff" for c in s.history[-1]["content"]) else "en"
     hospital = card["hospital_name_ar"] if lang == "ar" else card["hospital_name"]
     reply = BOOKED_TEXT[lang].format(ticket=ticket, hospital=hospital, time=slot["local_time"])
