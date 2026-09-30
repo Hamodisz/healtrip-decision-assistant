@@ -227,10 +227,25 @@ def extract_focused(llm: LLM, s: ChatSession, fields: list[str], question: str, 
 _ID = re.compile(r"\b(DOC|HOSP)-\d{3}\b")
 
 
+# The model may refer to providers ONLY by ID; the UI turns IDs into names taken from DB rows.
+# So any doctor/facility NAME in model text is a violation, real or invented. (Review finding: the
+# ID-only check let "Dr. Ahmed Al-Something at King Faisal Hospital" through.)
+_NAMED_PROVIDER = [
+    re.compile(r"\b(Dr\.?|Doctor|Prof\.?)\s+[A-Z]"),
+    re.compile(r"\b[A-Z][\w'-]+(?:\s+[A-Z][\w'-]+)*\s+(Hospital|Clinic|Medical Center|Medical Centre|Center|Centre|Institute)\b"),
+]
+_NAMED_PROVIDER_AR = re.compile(r"(الدكتور|الدكتوره|دكتور|دكتوره|د\.)\s*[^\s،.]+|(مستشفي|مستشفيات|مجمع|مركز|معهد)\s+[^\s،.]+")
+
+
+def names_a_provider(text: str) -> bool:
+    return any(p.search(text) for p in _NAMED_PROVIDER) or bool(_NAMED_PROVIDER_AR.search(red_flags.normalize(text)))
+
+
 def grounded(text: str, gw: ToolGateway, s: ChatSession) -> bool:
-    """Every provider ID the reply mentions must have come from a tool call."""
+    """Every provider ID the reply mentions must have come from a tool call, and no provider is
+    mentioned by name (names can only come from DB cards)."""
     allowed = set(gw.doctors) | set(gw.hospitals) | s.known_doctor_ids | {c["hospital_id"] for c in gw.doctors.values()}
-    return all(m.group(0) in allowed for m in _ID.finditer(text))
+    return all(m.group(0) in allowed for m in _ID.finditer(text)) and not names_a_provider(text)
 
 
 # ── Step 4a: deterministic safety paths ──
@@ -381,6 +396,9 @@ def _ask(llm, s, lang, key, result, trace, agent="reception", prefix="") -> Turn
     text, blocked = no_diagnosis.enforce(text, lang)
     if blocked:
         text = no_diagnosis.SAFE_REPLY[lang] + " " + template
+    elif names_a_provider(text) or _ID.search(text):
+        # Question turns have no tool results at all, so any provider mentioned here is invented.
+        blocked, text = ["ungrounded_provider_reference"], template
     trace.append({"step": "ask", "question_for": [key], "blocked": blocked})
     return TurnResult(reply=prefix + text, language=lang, triage=result, trace=trace, blocked=blocked, agent=agent)
 

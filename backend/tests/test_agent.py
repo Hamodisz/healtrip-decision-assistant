@@ -231,3 +231,25 @@ def test_english_file_summary_uses_english_punctuation(db):
     p = db.query(Patient).filter_by(file_number="MRN-100001").one()
     assert "Hypertension, Type 2 diabetes" in patients.file_summary(db, p, "en")
     assert "،" in patients.file_summary(db, p, "ar")
+
+
+@pytest.mark.parametrize("invented", [
+    "A great option is Dr. Ahmed Al-Something at King Faisal Hospital.",
+    "You could also see Dr Khalid Mansour in Jeddah.",
+    "أنصحك بالدكتور أحمد السالم في مستشفى الملك فيصل",
+    "Try the Mayo Clinic for a second opinion.",
+])
+def test_invented_provider_names_without_ids_are_never_shown(db, invented):
+    # Gap found on review: grounding only checked IDs (DOC-001), so a made-up NAME with no ID passed.
+    llm = FakeLLM(facts(), tool("search_providers", city="Riyadh"), text("[DOC-001]. " + invented))
+    r = run_turn(db, llm, _decided_session(), "ok")
+    assert "Al-Something" not in r.reply and "Khalid Mansour" not in r.reply
+    assert "السالم" not in r.reply and "Mayo" not in r.reply
+    assert r.blocked
+
+
+def test_question_turns_cannot_mention_providers_either(db):
+    # The question phase has no tool results at all, so ANY provider mention is invented.
+    s = ChatSession(facts=agent.PatientFacts(chief_complaint="chest_pain"))
+    r = run_turn(db, FakeLLM(facts(), text("Dr. Sami at Al Noor Hospital can help. Is the pain happening now?")), s, "chest pain")
+    assert "Sami" not in r.reply and "Noor" not in r.reply and "happening right now" in r.reply

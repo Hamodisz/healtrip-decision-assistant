@@ -314,6 +314,7 @@ Why the LLM isn't trusted here: it isn't that LLMs are always worse at triage. P
 | DB down | Tool returns `unavailable`; reply: *"I'm unable to access the provider database right now."* No results are ever produced from model memory |
 | Invented specialty | `specialty` is an enum of codes that exist in the DB; any other value is rejected at the tool boundary |
 | Readable IDs | `DOC-001`, `HOSP-001` make the grounding rule easy to audit in logs and tests |
+| Invented name with no ID (*"Dr. Ahmed at King Faisal Hospital"*, *"الدكتور أحمد في مستشفى…"*) | The model may refer to providers **only by ID**; the UI turns IDs into names from DB cards. Any doctor/facility **name** in model text (EN + AR patterns) counts as a violation and the reply is replaced. This applies to question turns too, which have no tool results at all. (Found on review: the first version only checked IDs, and 5 tests now pin this.) |
 
 ---
 
