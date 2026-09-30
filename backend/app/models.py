@@ -20,6 +20,7 @@ from sqlalchemy import (
     String,
     UniqueConstraint,
 )
+from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.db import Base
@@ -188,3 +189,24 @@ class Notification(Base):
         CheckConstraint("channel IN ('doctor_email','hospital_system')", name="ck_notification_channel"),
         CheckConstraint("status IN ('pending','sent','failed')", name="ck_notification_status"),
     )
+
+
+class ChatSessionRow(Base):
+    """Conversation state, so any serverless instance can continue any conversation.
+    Holds the in-progress facts and chat text only; deleted after 30 minutes of inactivity.
+    Identity numbers are never stored here (reception drops them after the check)."""
+
+    __tablename__ = "chat_sessions"
+
+    id: Mapped[str] = mapped_column(String(32), primary_key=True)
+    data: Mapped[dict] = mapped_column(JSONB)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=text("now()"), index=True)
+
+
+class DailyUsage(Base):
+    """Spend guard for the public demo: a hard cap on chat turns per day."""
+
+    __tablename__ = "daily_usage"
+
+    day: Mapped[date] = mapped_column(Date, primary_key=True)
+    chat_turns: Mapped[int] = mapped_column(Integer, default=0)

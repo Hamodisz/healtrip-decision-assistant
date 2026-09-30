@@ -5,6 +5,7 @@ import threading
 from app import repository as repo
 from app.agent import ChatSession, PatientFacts
 from app.triage import CarePath
+from app import session_store
 from app.api import chat as chat_api
 from app.db import SessionLocal
 from app.main import app
@@ -15,15 +16,20 @@ def _decided_session_in_store() -> ChatSession:
     s = ChatSession(facts=PatientFacts(chief_complaint="chest_pain", pain_now=False, onset="days",
                                        has_diagnosis_to_review=False, **NO_SYMPTOMS),
                     stage="recommend", confirmed=True, is_guest=True)
-    chat_api._sessions[s.id] = (0.0, s)
+    with SessionLocal() as db:
+        session_store.save(db, s)
     return s
 
 
 def _chat(client, s, msg, llm):
     app.dependency_overrides[chat_api.get_llm] = lambda: llm
     try:
-        chat_api._sessions[s.id] = (__import__("time").monotonic(), s)
-        return client.post("/api/v1/chat", json={"session_id": s.id, "message": msg}).json()
+        with SessionLocal() as db:
+            session_store.save(db, s)
+        body = client.post("/api/v1/chat", json={"session_id": s.id, "message": msg}).json()
+        with SessionLocal() as db:  # pick up what the endpoint saved
+            s.__dict__.update(session_store.load(db, s.id).__dict__)
+        return body
     finally:
         app.dependency_overrides.clear()
 
@@ -75,6 +81,8 @@ def test_cannot_book_a_time_that_was_not_offered(client):
     s = _decided_session_in_store()
     s.care_path = CarePath.specialist  # bookable path, so the ONLY reason to refuse is the slot
     with SessionLocal() as db:
+        session_store.save(db, s)
+    with SessionLocal() as db:
         other = repo.available_slots(db, "DOC-014", limit=1)[0].id  # a real slot, but never offered here
     r = client.post("/api/v1/bookings", json={"session_id": s.id, "slot_id": other})
     assert r.status_code == 409 and "not offered" in r.json()["error"]["message"]
@@ -90,7 +98,8 @@ def test_cannot_get_times_for_a_doctor_the_system_did_not_return(client):
 
 def test_emergency_conversation_cannot_book(client):
     s = ChatSession(emergency_locked=True, offered_slot_ids={1})
-    chat_api._sessions[s.id] = (0.0, s)
+    with SessionLocal() as db:
+        session_store.save(db, s)
     assert client.post("/api/v1/bookings", json={"session_id": s.id, "slot_id": 1}).status_code == 409
 
 
@@ -141,6 +150,7 @@ def test_verified_patient_booking_links_the_file_for_the_hospital(client):
     s = _decided_session_in_store()
     with SessionLocal() as db:
         s.patient_id = db.query(Patient).filter_by(file_number="MRN-100003").one().id
+        session_store.save(db, s)
     _chat(client, s, "Riyadh", FakeLLM(facts(city="Riyadh"), tool("search_providers", city="Riyadh"), text("[DOC-001]")))
     body = _chat(client, s, "times?", FakeLLM(facts(), tool("get_available_slots", doctor_id="DOC-001"), text("Tap Confirm.")))
     b = client.post("/api/v1/bookings", json={"session_id": s.id, "slot_id": body["slots"][3]["slot_id"]}).json()
@@ -148,3 +158,22 @@ def test_verified_patient_booking_links_the_file_for_the_hospital(client):
     his = next(n for n in inbox if n["channel"] == "hospital_system")
     assert "Patient/MRN-100003" in his["body"]
     assert "Mitral" not in str(inbox)  # the file is linked, the medical history is not sent
+
+
+def test_session_survives_a_round_trip_through_the_database():
+    # Serverless: the next message may hit another instance, so state must round-trip exactly.
+    from datetime import date
+    s = _decided_session_in_store()
+    s.reception["date_of_birth"] = date(1971, 4, 12)
+    s.known_doctor_ids, s.offered_slot_ids = {"DOC-001"}, {5, 7}
+    with SessionLocal() as db:
+        session_store.save(db, s)
+        loaded = session_store.load(db, s.id)
+    assert loaded.facts == s.facts and loaded.offered_slot_ids == {5, 7} and loaded.confirmed
+    assert loaded.reception["date_of_birth"] == date(1971, 4, 12)
+
+
+def test_daily_cap_stops_the_public_demo(client, monkeypatch):
+    monkeypatch.setattr(chat_api, "get_settings", lambda: type("S", (), {"daily_turn_cap": 0, "rate_limit_per_minute": 99})())
+    r = client.post("/api/v1/chat", json={"message": "hello"})
+    assert r.status_code == 503 and "daily usage limit" in r.json()["error"]["message"]

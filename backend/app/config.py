@@ -19,6 +19,17 @@ class Settings(BaseSettings):
     llm_disable_thinking: bool = False  # DeepSeek/Kimi reason by default and can return empty content
 
     rate_limit_per_minute: int = 20
+    daily_turn_cap: int = 300
+    seed_token: str = ""  # enables POST /api/v1/admin/seed only while set  # public-demo spend guard (~$0.00075/turn measured on deepseek-flash)
+
+    @property
+    def sqlalchemy_url(self) -> str:
+        """Hosted Postgres (Neon etc.) gives postgres:// or postgresql:// URLs; we use the psycopg 3 driver."""
+        u = self.database_url
+        for prefix in ("postgres://", "postgresql://"):
+            if u.startswith(prefix):
+                return "postgresql+psycopg://" + u[len(prefix):]
+        return u
 
     @property
     def cors_origin_list(self) -> list[str]:

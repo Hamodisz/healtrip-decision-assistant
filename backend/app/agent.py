@@ -463,3 +463,26 @@ def _finish(s: ChatSession, r: TurnResult) -> TurnResult:
              r.triage.care_path.value if r.triage else None, r.triage.rule_id if r.triage else None,
              [p["doctor_id"] for p in r.providers], r.blocked)
     return r
+
+
+# ── Persistence (serverless: any instance must be able to continue any conversation) ──
+def session_to_dict(s: ChatSession) -> dict:
+    rec = {k: (v.isoformat() if isinstance(v, date) else v) for k, v in s.reception.items()}
+    return {"id": s.id, "facts": s.facts.model_dump(mode="json"), "prefs": s.prefs, "history": s.history[-40:],
+            "known_doctor_ids": sorted(s.known_doctor_ids), "emergency_locked": s.emergency_locked,
+            "care_path": s.care_path.value if s.care_path else None, "offered_slot_ids": sorted(s.offered_slot_ids),
+            "last_ask": s.last_ask, "stage": s.stage, "reception": rec, "patient_id": s.patient_id,
+            "patient_name": s.patient_name, "is_guest": s.is_guest, "verify_attempts": s.verify_attempts,
+            "confirmed": s.confirmed}
+
+
+def session_from_dict(d: dict) -> ChatSession:
+    rec = dict(d.get("reception") or {})
+    if rec.get("date_of_birth"):
+        rec["date_of_birth"] = date.fromisoformat(rec["date_of_birth"])
+    return ChatSession(id=d["id"], facts=PatientFacts.model_validate(d["facts"]), prefs=d["prefs"], history=d["history"],
+                       known_doctor_ids=set(d["known_doctor_ids"]), emergency_locked=d["emergency_locked"],
+                       care_path=CarePath(d["care_path"]) if d["care_path"] else None,
+                       offered_slot_ids=set(d["offered_slot_ids"]), last_ask=d["last_ask"], stage=d["stage"],
+                       reception=rec, patient_id=d["patient_id"], patient_name=d["patient_name"],
+                       is_guest=d["is_guest"], verify_attempts=d["verify_attempts"], confirmed=d["confirmed"])

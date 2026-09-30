@@ -2,8 +2,9 @@
 
 **[النسخة العربية ← README.ar.md](README.ar.md)**
 
-> **Demo:** _coming soon (added when the chat UI milestone ships)_
-> **Status:** 🚧 In progress. See [Roadmap](#roadmap). This README is updated as each milestone lands; sections marked _planned_ describe the design before the code exists.
+> ## 🔗 Live demo: **https://healtrip-demo.vercel.app**
+> Try: *"I have chest pain and I'm not sure whether I should see a cardiologist, go to the ER, or seek a second opinion."* When reception asks, use the fictional patient file **`MRN-100001`**, born **12/04/1971**, or say you have no file. Arabic works too (toggle top-right).
+> Hosted on Vercel (Next.js UI + FastAPI) with Neon Postgres and DeepSeek. Capped at 300 chat messages/day as a spend guard; appointment slots cover the 14 days after the last seed.
 >
 > ⚠️ **Prototype. Mock data only. Not medical advice. Not a diagnostic system. Not HIPAA / Saudi-regulation compliant.** All doctors, hospitals and slots are fictional.
 
@@ -545,7 +546,7 @@ Deliberately small: a demo that makes the engineering decisions visible, not a p
 | M4 | Chat UI (Arabic / English, RTL, handoff, cards, booking, trace) | ✅ done |
 | M5 | Booking: real open times → patient confirms → DB ticket number | ✅ done, incl. mocked doctor/hospital notification |
 | M5b | Reception workflow: patient file lookup (mock CRM), clinic-assistant handoff + confirmation, offers | ✅ done |
-| M6 | README walkthrough with screenshots (normal, emergency, booking) | ✅ done · public demo link: not deployed yet |
+| M6 | README walkthrough with screenshots + public demo | ✅ done: https://healtrip-demo.vercel.app |
 
 **87 automated tests** (`backend/tests/`), run against a real Postgres test database, with a scripted fake LLM for the agent tests.
 
@@ -565,5 +566,7 @@ cp .env.example .env
 # frontend (second terminal)
 cd frontend && npm install && npm run build && npx next start -p 3100   # http://localhost:3100
 ```
+
+**Hosting (the live demo):** two Vercel projects, the Next.js UI and the FastAPI API (`healtrip-api`), with Neon Postgres. On serverless hosting each request can land on a different instance, so conversation state lives in Postgres (`chat_sessions`, 30-minute expiry), not in process memory. A `daily_usage` counter caps chat turns per day. The hosted database was seeded through a one-time endpoint protected by a random token (`POST /api/v1/admin/seed`), which answers 404 once the token is removed; the database port wasn't reachable from the development machine.
 
 The frontend proxies `/api/*` to the backend (`BACKEND_URL`, default `http://localhost:8000`), so the browser never sees the backend URL, the database or the AI key. Set `LLM_BASE_URL` / `LLM_MODEL` / `LLM_API_KEY` in `backend/.env` (see `.env.example`). Any OpenAI-compatible provider works.

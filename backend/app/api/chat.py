@@ -6,7 +6,7 @@ from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session
 
-from app import notifications, repository as repo
+from app import notifications, repository as repo, session_store
 from app.agent import BOOKABLE, ChatSession, run_turn
 from app.tools import doctor_card, slot_card
 from app.config import get_settings
@@ -16,10 +16,7 @@ from app.triage import TriageResult
 
 router = APIRouter(prefix="/api/v1", tags=["chat"])
 
-SESSION_TTL_S = 30 * 60
-MAX_SESSIONS = 1000
-_sessions: dict[str, tuple[float, ChatSession]] = {}   # in memory only, expires after 30 min
-_hits: dict[str, deque] = defaultdict(deque)
+_hits: dict[str, deque] = defaultdict(deque)  # per-instance rate limit (production: shared store)
 
 
 def get_llm() -> LLM:
@@ -35,20 +32,6 @@ def rate_limit(request: Request) -> None:
     if len(q) >= get_settings().rate_limit_per_minute:
         raise HTTPException(status_code=429, detail="Too many messages. Please wait a minute.")
     q.append(now)
-
-
-def _get_or_create(session_id: str | None) -> ChatSession:
-    now = time.monotonic()
-    for sid in [k for k, (t, _) in _sessions.items() if now - t > SESSION_TTL_S]:
-        del _sessions[sid]
-    if session_id and session_id in _sessions:
-        s = _sessions[session_id][1]
-    else:
-        if len(_sessions) >= MAX_SESSIONS:
-            raise HTTPException(status_code=503, detail="Service busy. Please try again shortly.")
-        s = ChatSession()
-    _sessions[s.id] = (now, s)
-    return s
 
 
 class ChatRequest(BaseModel):
@@ -75,8 +58,11 @@ class ChatResponse(BaseModel):
 
 @router.post("/chat", response_model=ChatResponse, dependencies=[Depends(rate_limit)])
 def chat(req: ChatRequest, db: Annotated[Session, Depends(get_session)], llm: Annotated[LLM, Depends(get_llm)]):
-    s = _get_or_create(req.session_id)
+    if session_store.count_turn(db) > get_settings().daily_turn_cap:
+        raise HTTPException(status_code=503, detail="The demo has reached its daily usage limit. Please try again tomorrow.")
+    s = session_store.load(db, req.session_id) or ChatSession()
     r = run_turn(db, llm, s, req.message.strip(), req.language)
+    session_store.save(db, s)
     return ChatResponse(session_id=s.id, reply=r.reply, language=r.language, triage=r.triage,
                         providers=r.providers, hospitals=r.hospitals, slots=r.slots, offers=r.offers,
                         agent=r.agent, clinic=r.clinic, patient_name=s.patient_name, trace=r.trace)
@@ -108,10 +94,9 @@ def confirm_booking(req: BookingRequest, db: Annotated[Session, Depends(get_sess
     """Called by the patient's Confirm tap, never by the model. Every check is code:
     the session exists, its care path is bookable, and the slot is one WE offered in this
     conversation (so it belongs to a doctor who came from the database)."""
-    entry = _sessions.get(req.session_id)
-    if not entry:
+    s = session_store.load(db, req.session_id)
+    if not s:
         raise HTTPException(status_code=404, detail="Conversation not found or expired.")
-    s = entry[1]
     if s.emergency_locked or s.care_path not in BOOKABLE:
         raise HTTPException(status_code=409, detail="Booking is not available for this conversation.")
     if req.slot_id not in s.offered_slot_ids:
@@ -133,4 +118,5 @@ def confirm_booking(req: BookingRequest, db: Annotated[Session, Depends(get_sess
     hospital = card["hospital_name_ar"] if lang == "ar" else card["hospital_name"]
     reply = BOOKED_TEXT[lang].format(ticket=ticket, hospital=hospital, time=slot["local_time"])
     s.history.append({"role": "assistant", "content": reply})
+    session_store.save(db, s)
     return BookingResponse(ticket_number=ticket, reply=reply, doctor=card, slot=slot)
