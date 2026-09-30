@@ -199,25 +199,23 @@ The pattern: **when something matters, it is enforced in code and pinned with a 
 | Provider facts (names, hospitals, languages, fees) | **Database via tools** | The model has no provider knowledge of its own that we trust |
 | The final sentence the patient reads | **LLM**, then two **code checks**: grounding + no-diagnosis | Natural language, but only about returned data, and never a diagnosis or treatment advice |
 
-Planned `PatientFacts` (what the LLM extracts; the triage layer consumes):
+`PatientFacts` (what the LLM extracts; the triage layer consumes, `backend/app/triage.py`):
 
 ```json
 {
   "chief_complaint": "chest_pain",
-  "currently_experiencing": true,
-  "onset": "30_minutes_ago",
-  "character": "pressure",
-  "radiation": ["left_arm"],
-  "shortness_of_breath": true,
-  "syncope_or_dizziness": false,
-  "sweating_or_nausea": true,
-  "age": 54,
-  "known_heart_condition": null,
-  "prior_diagnosis_seeking_review": false,
-  "preferred_language": "ar",
-  "preferred_city": "Riyadh"
+  "pain_now": false,
+  "onset": "weeks_or_more",
+  "shortness_of_breath": false,
+  "fainting_or_dizziness": false,
+  "sweating_or_nausea": false,
+  "pain_spreads": false,
+  "has_diagnosis_to_review": false,
+  "review_specialty": null
 }
 ```
+
+Reception data (file number / national ID / date of birth) and search preferences (city, language) are extracted by the same call but kept **outside** `PatientFacts`: the triage rules never see identity or location.
 
 `null` means *not asked yet*. The triage layer turns nulls that matter into the next question, so the agent stops asking as soon as a path can be decided.
 
@@ -227,9 +225,10 @@ Planned `PatientFacts` (what the LLM extracts; the triage layer consumes):
 
 | Tool | Input | Output | Allowed when |
 |---|---|---|---|
-| `search_providers` | `specialty`, `city?`, `country?`, `language?`, `second_opinion?`, `remote?` | list of `{doctor_id, doctor_name, specialty, hospital_id, hospital_name, city, languages}` | care path ∈ specialist, routine, second opinion |
+| `search_providers` | `city?`, `country?`, `language?`, `remote?` (specialty and second-opinion are **set by the rules**, not the model) | list of `{doctor_id, doctor_name, specialty, hospital_id, hospital_name, city, languages}` | care path ∈ specialist, routine, second opinion |
 | `get_doctor_details` | `doctor_id` | full doctor row + hospital | a `doctor_id` returned earlier in this conversation |
-| `get_hospital_details` | `hospital_id` | full hospital row | any non-emergency path; emergency path: only `has_emergency = true` hospitals |
+| `get_available_slots` | `doctor_id`, `mode?` | up to 5 open times (local time) | a `doctor_id` returned earlier in this conversation |
+| `get_hospital_details` | `hospital_id` | full hospital row | hospitals of doctors returned in this conversation |
 
 The agent (`backend/app/agent.py`) is one orchestrator whose steps are fixed by code:
 
@@ -252,7 +251,7 @@ The **tool gateway** (`backend/app/tools.py`) sits between the model and the dat
 - `specialty` and `second_opinion` are **set by the triage rules and can't be changed by the model**. The model only chooses city/country/language filters.
 - `get_doctor_details` only works for doctors already returned in this conversation; `get_hospital_details` only for their hospitals.
 
-The LLM client (`backend/app/llm.py`) speaks the OpenAI-compatible API, so Anthropic, Groq, Gemini or OpenAI is a `.env` change, not a code change.
+The LLM client (`backend/app/llm.py`) speaks the OpenAI-compatible API, so DeepSeek (used for the live runs), Anthropic, Groq, Gemini or OpenAI is a `.env` change, not a code change.
 
 Tool inputs are validated with Pydantic **before** any query; invalid parameters are rejected and reported back to the model as a structured tool error, never passed to the DB. Tools call the same repository layer as the REST API.
 
@@ -348,7 +347,7 @@ fixed-template reply: "Your appointment is booked. Your ticket number is HT-2026
 | Two patients take the same time at once | Row lock (`SELECT … FOR UPDATE`) + `UNIQUE(slot_id)`; tested with two concurrent threads: exactly one wins |
 | Booking during an emergency | Refused: emergency sessions are locked |
 
-No patient identity is stored: the ticket is what the patient presents. Production would link a verified patient record, with consent.
+A booking is linked to the patient's file **only if reception verified their identity**; guests book without one. The hospital receives the file number (it's their patient), never the medical history or today's symptoms.
 
 ### Notifying the doctor / hospital (✅ mocked end-to-end)
 
@@ -541,12 +540,14 @@ Deliberately small: a demo that makes the engineering decisions visible, not a p
 | # | Milestone | Status |
 |---|---|---|
 | M1 | Data foundation: PostgreSQL schema, mock network, provider API | ✅ done |
-| M2 | **Safety / triage layer**: red-flag pre-check + care-path rules (AR/EN), unit-tested | ✅ done (54 tests total) |
-| M3 | **AI agent + tools**: fact extraction, relevant questions, `search_providers` / `get_*_details`, grounding check, failure handling | ✅ code + 66 tests (scripted LLM); live-model run pending |
+| M2 | **Safety / triage layer**: red-flag pre-check + care-path rules (AR/EN), unit-tested | ✅ done |
+| M3 | **AI agent + tools**: fact extraction, relevant questions, `search_providers` / `get_*_details`, grounding check, failure handling | ✅ done: scripted-LLM tests + live DeepSeek runs (EN/AR) |
 | M4 | Chat UI (Arabic / English, RTL, handoff, cards, booking, trace) | ✅ done |
-| M5 | Booking: real open times → patient confirms → DB ticket number | ✅ done, incl. mocked doctor/hospital notification (74 tests total) |
-| M5b | Reception workflow: patient file lookup (mock CRM), clinic-assistant handoff + confirmation, offers | ✅ done (87 tests) |
-| M6 | README examples (normal, emergency, provider search) + demo link | ⬜ |
+| M5 | Booking: real open times → patient confirms → DB ticket number | ✅ done, incl. mocked doctor/hospital notification |
+| M5b | Reception workflow: patient file lookup (mock CRM), clinic-assistant handoff + confirmation, offers | ✅ done |
+| M6 | README walkthrough with screenshots (normal, emergency, booking) | ✅ done · public demo link: not deployed yet |
+
+**87 automated tests** (`backend/tests/`), run against a real Postgres test database, with a scripted fake LLM for the agent tests.
 
 ---
 
