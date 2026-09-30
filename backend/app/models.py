@@ -210,3 +210,13 @@ class DailyUsage(Base):
 
     day: Mapped[date] = mapped_column(Date, primary_key=True)
     chat_turns: Mapped[int] = mapped_column(Integer, default=0)
+
+
+class RateHit(Base):
+    """Rate-limit counter shared by every serverless instance (fixed one-minute windows)."""
+
+    __tablename__ = "rate_hits"
+
+    key: Mapped[str] = mapped_column(String(80), primary_key=True)
+    window_start: Mapped[datetime] = mapped_column(DateTime(timezone=True), primary_key=True)
+    hits: Mapped[int] = mapped_column(Integer, default=0)

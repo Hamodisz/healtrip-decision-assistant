@@ -17,6 +17,40 @@ from app.models import Patient, Specialty
 from app.triage import Complaint, Onset, PatientFacts
 
 MAX_VERIFY_ATTEMPTS = 3
+
+# ── Date of birth, parsed in CODE so the LLM never sees it ──
+_AR_DIGITS = str.maketrans("٠١٢٣٤٥٦٧٨٩", "0123456789")
+_MONTHS = {m: i for i, names in enumerate([
+    ("january", "jan", "يناير"), ("february", "feb", "فبراير"), ("march", "mar", "مارس"),
+    ("april", "apr", "ابريل", "أبريل"), ("may", "مايو"), ("june", "jun", "يونيو"),
+    ("july", "jul", "يوليو"), ("august", "aug", "اغسطس", "أغسطس"), ("september", "sep", "sept", "سبتمبر"),
+    ("october", "oct", "اكتوبر", "أكتوبر"), ("november", "nov", "نوفمبر"), ("december", "dec", "ديسمبر"),
+], start=1) for m in names}
+_MONTH_RE = "|".join(sorted(map(re.escape, _MONTHS), key=len, reverse=True))
+_DATE_PATTERNS = [
+    (re.compile(r"\b(\d{4})[-/.](\d{1,2})[-/.](\d{1,2})\b"), ("y", "m", "d")),       # 1971-04-12
+    (re.compile(r"\b(\d{1,2})[-/.](\d{1,2})[-/.](\d{4})\b"), ("d", "m", "y")),       # 12/04/1971 (Saudi: day first)
+    (re.compile(rf"\b(\d{{1,2}})\s+({_MONTH_RE})\.?,?\s+(\d{{4}})", re.I), ("d", "M", "y")),  # 12 April 1971 / 5 يناير 1962
+    (re.compile(rf"\b({_MONTH_RE})\.?\s+(\d{{1,2}}),?\s+(\d{{4}})", re.I), ("M", "d", "y")),  # April 12, 1971
+]
+
+
+def find_dob(text: str) -> tuple[date | None, str]:
+    """Return (date or None, text with the date removed). Only plausible birth dates count."""
+    t = text.translate(_AR_DIGITS)
+    for rx, order in _DATE_PATTERNS:
+        m = rx.search(t)
+        if not m:
+            continue
+        parts = dict(zip(order, m.groups()))
+        try:
+            month = _MONTHS[parts["M"].lower()] if "M" in parts else int(parts["m"])
+            d = date(int(parts["y"]), month, int(parts["d"]))
+        except (ValueError, KeyError):
+            continue
+        if date(1900, 1, 1) <= d <= date.today():
+            return d, t[:m.start()] + "[date of birth]" + t[m.end():]
+    return None, text
 FILE_RE, NID_RE = re.compile(r"^MRN-\d{6}$"), re.compile(r"^\d{10}$")
 
 

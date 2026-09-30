@@ -195,3 +195,34 @@ def test_emergency_message_is_never_blocked_by_the_daily_cap(client, monkeypatch
     monkeypatch.setattr(chat_api, "get_settings", lambda: type("S", (), {"daily_turn_cap": 0, "rate_limit_per_minute": 99})())
     r = client.post("/api/v1/chat", json={"message": "عندي ألم في صدري وما أقدر أتنفس"})
     assert r.status_code == 200 and "997" in r.json()["reply"]
+
+
+def test_ui_proxy_gate(client, monkeypatch):
+    from app import config
+    monkeypatch.setattr(config.get_settings(), "proxy_key", "k" * 32)
+    assert client.get("/api/v1/doctors").status_code == 404                                  # direct call
+    assert client.get("/api/v1/doctors", headers={"X-Proxy-Key": "wrong"}).status_code == 404
+    assert client.get("/api/v1/doctors", headers={"X-Proxy-Key": "k" * 32}).status_code == 200  # via our UI
+    assert client.get("/health").status_code == 200
+
+
+def test_shared_rate_limit_counts_per_client_ip_across_instances():
+    with SessionLocal() as db:
+        results = [session_store.hit_rate_limit(db, "chat:198.51.100.7", limit=3) for _ in range(4)]
+        other = session_store.hit_rate_limit(db, "chat:203.0.113.9", limit=3)
+    assert results == [False, False, False, True] and other is False
+
+
+def test_cron_tops_up_slots_idempotently_and_requires_the_secret(client, monkeypatch):
+    from datetime import date, timedelta
+
+    from app import config
+    from app.seed import top_up_slots
+    with SessionLocal() as db:
+        first = top_up_slots(db, days=20, start=date.today())
+        again = top_up_slots(db, days=20, start=date.today())
+    assert first > 0 and again == 0                         # second run adds nothing (no duplicates)
+    assert client.get("/api/v1/admin/cron").status_code == 404
+    monkeypatch.setattr(config.get_settings(), "cron_secret", "s" * 32)
+    r = client.get("/api/v1/admin/cron", headers={"Authorization": "Bearer " + "s" * 32})
+    assert r.status_code == 200 and "slots_added" in r.json()

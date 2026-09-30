@@ -203,9 +203,11 @@ def test_chat_endpoint_and_rate_limit(client, monkeypatch):
         assert client.post("/api/v1/chat", json={"message": ""}).status_code == 422
         assert client.post("/api/v1/chat", json={"message": "x" * 1001}).status_code == 422
 
-        monkeypatch.setattr(chat_api, "get_settings", lambda: type("S", (), {"rate_limit_per_minute": 0})())
-        r = client.post("/api/v1/chat", json={"message": "I can't breathe"})
+        monkeypatch.setattr(chat_api, "get_settings", lambda: type("S", (), {"rate_limit_per_minute": 0, "daily_turn_cap": 999})())
+        r = client.post("/api/v1/chat", json={"message": "I have chest pain"})
         assert r.status_code == 429 and r.json()["error"]["code"] == "rate_limited"
+        r = client.post("/api/v1/chat", json={"message": "I can't breathe"})   # an emergency is never rate-limited
+        assert r.status_code == 200 and "997" in r.json()["reply"]
     finally:
         app.dependency_overrides.clear()
 
@@ -282,3 +284,23 @@ def test_identity_numbers_never_reach_the_llm_or_the_stored_history(db):
 
 def test_hospital_inbox_requires_a_ticket(client):
     assert client.get("/api/v1/hospital/inbox").status_code == 422
+
+
+@pytest.mark.parametrize("dob_reply", ["12/04/1971", "12 April 1971", "مواليد 12 ابريل 1971", "١٢/٠٤/١٩٧١"])
+def test_date_of_birth_is_read_in_code_and_never_sent_to_the_llm(db, dob_reply):
+    s = ChatSession(facts=agent.PatientFacts(chief_complaint="chest_pain", pain_now=False))
+    seen = []
+    class Spy(FakeLLM):
+        def chat(self, messages, tools=None, tool_choice=None):
+            seen.append(str(messages)); return super().chat(messages, tools, tool_choice)
+    run_turn(db, Spy(facts(has_file=True), text("DOB?")), s, "yes MRN-100001")
+    run_turn(db, Spy(facts(), text("Any shortness of breath?")), s, dob_reply)
+    assert s.patient_id is not None
+    assert not any("1971" in m or "١٩٧١" in m for m in seen)
+
+
+def test_unreadable_date_asks_again_in_a_fixed_format_without_the_llm(db):
+    s = ChatSession(facts=agent.PatientFacts(chief_complaint="chest_pain", pain_now=False))
+    run_turn(db, FakeLLM(facts(has_file=True), text("DOB?")), s, "MRN-100001")
+    r = run_turn(db, FakeLLM(), s, "the spring of seventy-one")
+    assert r.reply == agent.QUESTIONS["dob_format"]["en"] and s.patient_id is None

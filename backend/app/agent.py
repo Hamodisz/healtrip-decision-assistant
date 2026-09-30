@@ -74,6 +74,8 @@ QUESTIONS = {
                  "ar": "قبل أن نكمل، هل لديك ملف طبي لدينا؟ إذا نعم، أرسل رقم الملف (مثل MRN-100001) أو رقم الهوية."},
     "date_of_birth": {"en": "Thank you. To verify it's you, what is your date of birth?",
                       "ar": "شكرًا لك. للتحقق من هويتك، ما هو تاريخ ميلادك؟"},
+    "dob_format": {"en": "Sorry, I couldn't read that date. Please write your date of birth as DD/MM/YYYY, for example 12/04/1971.",
+                   "ar": "عذرًا، لم أتمكن من قراءة التاريخ. يُرجى كتابة تاريخ ميلادك بهذا الشكل: يوم/شهر/سنة، مثل 12/04/1971."},
     "reverify": {"en": "I couldn't verify these details. Please check your file number or national ID and date of birth, or tell me if you'd like to continue without a file.",
                  "ar": "لم أتمكن من التحقق من هذه البيانات. يُرجى التأكد من رقم الملف أو الهوية وتاريخ الميلاد، أو أخبرني إذا كنت تريد المتابعة بدون ملف."},
     "chief_complaint": {"en": "What is the main health concern you'd like help with?",
@@ -145,7 +147,11 @@ def take_identifiers(s: "ChatSession", message: str) -> str:
         s.reception["file_number"], s.reception["has_file"] = m.group(0).upper(), True
     if m := _NATIONAL_ID.search(message):
         s.reception["national_id"], s.reception["has_file"] = m.group(0), True
-    return _NATIONAL_ID.sub("[ID]", _FILE_NO.sub("[file number]", message))
+    message = _NATIONAL_ID.sub("[ID]", _FILE_NO.sub("[file number]", message))
+    dob, message = patients.find_dob(message)
+    if dob:
+        s.reception["date_of_birth"] = dob
+    return message
 
 
 def detect_language(message: str, hint: str | None) -> str:
@@ -171,7 +177,6 @@ EXTRACT_TOOL = {"type": "function", "function": {
                                                          "gastroenterology", "orthopedics", "neurology"],
                              "description": "Specialty of the doctor who made the existing diagnosis (heart/valve → cardiology)"},
         "has_file": {"type": "boolean", "description": "Patient says they have (true) or don't have (false) a patient file"},
-        "date_of_birth": {"type": "string", "description": "Date of birth as YYYY-MM-DD"},
         "summary_confirmed": {"type": "boolean", "description": "ONLY if the assistant's last message asked the patient to confirm a "
                                                                 "summary: true if they confirmed, false if they said something is wrong"},
         "city": {"type": "string", "description": "City the patient wants care in, in English"},
@@ -280,8 +285,11 @@ def _safety_turn(db, s, lang, result: TriageResult, trace) -> TurnResult:
 # ── The turn ──
 def run_turn(db: Session, llm: LLM, s: ChatSession, message: str, lang_hint: str | None = None) -> TurnResult:
     lang = detect_language(message, lang_hint)
+    asked_for_dob = s.stage == "reception" and s.last_ask in (["date_of_birth"], ["reverify"])
     if s.stage == "reception":
         message = take_identifiers(s, message)
+    if asked_for_dob:
+        message = "[identity details]"  # the answer to an identity question is never sent to the LLM
     s.history.append({"role": "user", "content": message})
     trace: list[dict] = []
 
@@ -293,6 +301,11 @@ def run_turn(db: Session, llm: LLM, s: ChatSession, message: str, lang_hint: str
         result = TriageResult(care_path=CarePath.emergency, rule_id=rule, reason="Emergency red flag")
         trace.append({"step": "red_flag_precheck", "result": [h.id for h in hits] or ["session already emergency"]})
         return _finish(s, _safety_turn(db, s, lang, result, trace))
+
+    if asked_for_dob and not s.reception.get("date_of_birth"):
+        trace.append({"step": "reception", "result": "date_not_understood"})
+        s.last_ask = ["date_of_birth"]
+        return _finish(s, TurnResult(reply=QUESTIONS["dob_format"][lang], language=lang, triage=None, trace=trace))
 
     # 2. Extract facts.
     try:

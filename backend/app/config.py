@@ -20,7 +20,9 @@ class Settings(BaseSettings):
 
     rate_limit_per_minute: int = 20
     daily_turn_cap: int = 300
-    seed_token: str = ""  # enables POST /api/v1/admin/seed only while set  # public-demo spend guard (~$0.00075/turn measured on deepseek-flash)
+    seed_token: str = ""  # enables POST /api/v1/admin/seed only while set
+    proxy_key: str = ""   # when set, /api/* only answers requests from our UI server (X-Proxy-Key)
+    cron_secret: str = "" # Vercel Cron sends "Authorization: Bearer <CRON_SECRET>"  # public-demo spend guard (~$0.00075/turn measured on deepseek-flash)
 
     @property
     def sqlalchemy_url(self) -> str:

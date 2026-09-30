@@ -1,3 +1,4 @@
+import hmac
 import logging
 import uuid
 
@@ -27,6 +28,20 @@ app.add_middleware(
     allow_methods=["GET", "POST"],
     allow_headers=["Content-Type"],
 )
+
+
+@app.middleware("http")
+async def require_ui_proxy(request: Request, call_next):
+    """With PROXY_KEY set, /api/* answers only our UI server, which adds the key server-side.
+    Direct calls get a plain 404. Admin routes use their own secrets."""
+    key = get_settings().proxy_key
+    path = request.url.path
+    request.state.via_proxy = False
+    if key and path.startswith("/api/") and not path.startswith("/api/v1/admin/"):
+        if not hmac.compare_digest(request.headers.get("x-proxy-key", ""), key):
+            return _error(404, "not_found", "Not found")
+        request.state.via_proxy = True
+    return await call_next(request)
 
 
 # ── Error handling: one consistent error shape, no stack traces or SQL ever leak to clients ──

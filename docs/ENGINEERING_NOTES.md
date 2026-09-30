@@ -22,6 +22,10 @@ The pattern: **when something matters, it is enforced in code and pinned with a 
 
 ## Hosting
 
+**Daily job (Vercel Cron, 03:00 UTC):** `GET /api/v1/admin/cron` (secret-protected) keeps 14 days of open slots for every bookable doctor (idempotent insert; booked slots untouched), deletes expired conversations and old rate-limit rows, and creates any newly added tables (never drops or alters).
+
+**Request path:** browser → Next.js proxy route (adds the secret proxy key and the client IP) → FastAPI. The backend refuses `/api/*` without the key.
+
 **Hosting (the live demo):** two Vercel projects, the Next.js UI and the FastAPI API (`healtrip-api`), with Neon Postgres. On serverless hosting each request can land on a different instance, so conversation state lives in Postgres (`chat_sessions`, 30-minute expiry), not in process memory. A `daily_usage` counter caps chat turns per day. The hosted database was seeded through a one-time endpoint protected by a random token (`POST /api/v1/admin/seed`), which answers 404 once the token is removed; the database port wasn't reachable from the development machine.
 
 ## Roadmap

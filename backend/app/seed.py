@@ -128,6 +128,32 @@ def build_slots(doctors: list[tuple], hospitals: dict[str, tuple], start: date) 
     return slots
 
 
+def top_up_slots(session, days: int = SLOT_DAYS, start: date | None = None) -> int:
+    """Idempotent: make sure every bookable doctor has slots for the next `days` days.
+    Existing slots (including booked ones) are untouched: UNIQUE(doctor_id, starts_at) + DO NOTHING."""
+    from sqlalchemy import select
+    from sqlalchemy.dialects.postgresql import insert
+    start = start or date.today()
+    rows = []
+    for d in session.scalars(select(Doctor)):
+        if d.specialty_code == "emergency_medicine":
+            continue
+        h = d.hospital
+        tz = ZoneInfo(h.timezone)
+        for offset in range(1, days + 1):
+            day = start + timedelta(days=offset)
+            if day.weekday() in WEEKEND[h.country]:
+                continue
+            times = [(t, "in_person") for t in IN_PERSON_TIMES] + ([(REMOTE_TIME, "remote")] if d.offers_remote_consult else [])
+            rows += [{"doctor_id": d.id, "starts_at": datetime.combine(day, t, tz), "mode": m, "status": "open"} for t, m in times]
+    if not rows:
+        return 0
+    inserted = session.execute(insert(Slot).values(rows).on_conflict_do_nothing(constraint="uq_slot_doctor_time")
+                               .returning(Slot.id)).all()
+    session.commit()
+    return len(inserted)
+
+
 def reset_schema() -> None:
     with engine.begin() as conn:
         conn.execute(text("CREATE EXTENSION IF NOT EXISTS vector"))  # for RAG (M7)

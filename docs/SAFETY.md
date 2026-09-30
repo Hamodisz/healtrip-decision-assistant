@@ -100,10 +100,12 @@ Why the LLM isn't trusted here: it isn't that LLMs are always worse at triage. P
 - Secrets in environment variables; the AI key lives only in the backend, never in the frontend
 - CORS allow-list (never `*`)
 - The database is reachable only through the backend
-- Patient identity: file number / national ID **+ date of birth**, identical failure message, 3-attempt cap; file/ID numbers extracted in code and never sent to the LLM or stored in chat history; the date-of-birth answer is erased after the check ✅
+- Patient identity: file number / national ID **+ date of birth**, identical failure message, 3-attempt cap. File/ID numbers and the date of birth are parsed **in code** (EN/AR formats, Arabic digits); the reply to an identity question is never sent to the LLM or stored in chat history; an unreadable date gets a fixed "DD/MM/YYYY" re-ask ✅
 - Notifications carry the file number to the hospital (its own patient), never the medical history or today's symptoms ✅
 - Tool authorisation per care path ✅
-- Simple per-client rate limit on `/chat` (20/min, in memory) ✅
+- Rate limit per real client IP (20/min) shared across serverless instances in Postgres; fails open if the DB is down; emergencies are never rate-limited ✅
+- The API only answers our UI server (secret `X-Proxy-Key` added server-side by the Next.js proxy route); direct calls → 404 ✅
+- UI security headers: CSP, X-Frame-Options DENY, nosniff, Referrer-Policy, Permissions-Policy ✅
 - No patient accounts; conversation text is kept in the DB for at most 30 minutes (serverless needs shared state); logs record event types and IDs, not symptom text ✅
 - The red-flag emergency reply is returned even when the database is down or the daily cap is reached ✅ (audit finding, now tested)
 

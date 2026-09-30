@@ -87,8 +87,9 @@ renders only backend data                 ① red-flag check (code)             
 
 ## Security & error handling (short)
 
-- Validation at every boundary; bound SQL parameters only; secrets in env vars; the AI key never reaches the browser; CORS allow-list.
-- Identity: file number + date of birth, identical failure message, 3-attempt cap. File/ID numbers are pulled out **in code** and never sent to the LLM or kept in the chat history; the date-of-birth answer is erased after the check.
+- Validation at every boundary; bound SQL parameters only; secrets in env vars; the AI key never reaches the browser; CORS allow-list; security headers incl. CSP.
+- The API answers **only our UI server** (secret proxy key added server-side); direct calls get 404. Rate limit (per real client IP) and a daily usage cap are shared across all serverless instances (Postgres); an emergency is never rate-limited.
+- Identity: file number + date of birth, identical failure message, 3-attempt cap. File/ID numbers **and the date of birth are read in code** (EN/AR formats, Arabic digits) and never sent to the LLM or kept in the chat history.
 - No patient history or symptoms in notifications or logs; conversation text is kept in the DB for at most 30 minutes; daily usage cap on the public demo.
 - AI down → clear message · DB down → "can't access the provider database" (nothing fabricated) · no match → said plainly · **emergency → the fixed emergency message is returned even if the AI, the database or the daily cap fails.**
 - Production still needs: auth + consent, encryption at rest, audit logs, PDPL/NCA review, an **SFDA** assessment (clinical decision software can be a medical device), and clinician-validated rules. **Details: [docs/SAFETY.md](docs/SAFETY.md).**
@@ -108,9 +109,9 @@ renders only backend data                 ① red-flag check (code)             
 
 ```bash
 docker compose up -d                                  # Postgres on :5433
-cd backend && python3.12 -m venv .venv && .venv/bin/pip install -r requirements.txt
+cd backend && python3.12 -m venv .venv && .venv/bin/pip install -r requirements-dev.txt
 cp .env.example .env                                  # set LLM_BASE_URL / LLM_MODEL / LLM_API_KEY
 .venv/bin/python -m app.seed --reset && .venv/bin/uvicorn app.main:app --port 8000
-.venv/bin/python -m pytest -q                         # 95 tests (real Postgres, scripted fake LLM)
+.venv/bin/python -m pytest -q                         # 107 tests (real Postgres, scripted fake LLM)
 cd ../frontend && npm install && npm run build && npx next start -p 3100
 ```

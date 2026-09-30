@@ -1,5 +1,3 @@
-import time
-from collections import defaultdict, deque
 from typing import Annotated, Literal
 
 from fastapi import APIRouter, Depends, HTTPException, Request
@@ -18,22 +16,32 @@ from app.triage import EMERGENCY_MESSAGE, CarePath, TriageResult
 
 router = APIRouter(prefix="/api/v1", tags=["chat"])
 
-_hits: dict[str, deque] = defaultdict(deque)  # per-instance rate limit (production: shared store)
-
-
 def get_llm() -> LLM:
     return OpenAICompatLLM()
 
 
-def rate_limit(request: Request) -> None:
-    """Simple sliding window per client IP. Production: per-user limits in a shared store (Redis)."""
-    ip = request.client.host if request.client else "unknown"
-    now, q = time.monotonic(), _hits[ip]
-    while q and now - q[0] > 60:
-        q.popleft()
-    if len(q) >= get_settings().rate_limit_per_minute:
-        raise HTTPException(status_code=429, detail="Too many messages. Please wait a minute.")
-    q.append(now)
+def client_ip(request: Request) -> str:
+    """Behind our UI proxy (verified by the proxy key) the real client IP is the first
+    X-Forwarded-For entry; otherwise use the socket address."""
+    if getattr(request.state, "via_proxy", False):
+        fwd = request.headers.get("x-forwarded-for", "")
+        if fwd:
+            return fwd.split(",")[0].strip()
+    return request.client.host if request.client else "unknown"
+
+
+def enforce_rate_limit(db: Session, request: Request, bucket: str) -> None:
+    """Shared across all serverless instances (Postgres). Fails OPEN if the DB is unreachable:
+    a rate limiter must never be the reason a patient can't get help."""
+    try:
+        if session_store.hit_rate_limit(db, f"{bucket}:{client_ip(request)}", get_settings().rate_limit_per_minute):
+            raise HTTPException(status_code=429, detail="Too many messages. Please wait a minute.")
+    except SQLAlchemyError:
+        db.rollback()
+
+
+def rate_limit_bookings(request: Request, db: Annotated[Session, Depends(get_session)]) -> None:
+    enforce_rate_limit(db, request, "book")
 
 
 class ChatRequest(BaseModel):
@@ -58,12 +66,14 @@ class ChatResponse(BaseModel):
     disclaimer: str = "Prototype with mock data. Not medical advice; this assistant does not diagnose."
 
 
-@router.post("/chat", response_model=ChatResponse, dependencies=[Depends(rate_limit)])
-def chat(req: ChatRequest, db: Annotated[Session, Depends(get_session)], llm: Annotated[LLM, Depends(get_llm)]):
+@router.post("/chat", response_model=ChatResponse)
+def chat(req: ChatRequest, request: Request, db: Annotated[Session, Depends(get_session)], llm: Annotated[LLM, Depends(get_llm)]):
     message = req.message.strip()
     # Safety before infrastructure: a red flag gets the emergency message even if the DB is down
     # or the daily cap is reached. (Audit finding: both used to replace it with an error.)
     hits = red_flags.check(message)
+    if not hits:  # an emergency is never rate-limited
+        enforce_rate_limit(db, request, "chat")
     try:
         if not hits and session_store.count_turn(db) > get_settings().daily_turn_cap:
             raise HTTPException(status_code=503, detail="The demo has reached its daily usage limit. Please try again tomorrow.")
@@ -104,7 +114,7 @@ BOOKED_TEXT = {
 }
 
 
-@router.post("/bookings", response_model=BookingResponse, dependencies=[Depends(rate_limit)])
+@router.post("/bookings", response_model=BookingResponse, dependencies=[Depends(rate_limit_bookings)])
 def confirm_booking(req: BookingRequest, db: Annotated[Session, Depends(get_session)]):
     """Called by the patient's Confirm tap, never by the model. Every check is code:
     the session exists, its care path is bookable, and the slot is one WE offered in this
