@@ -1,0 +1,18 @@
+services:
+  db:
+    image: pgvector/pgvector:pg16   # Postgres 16 + pgvector (used by RAG in M7)
+    environment:
+      POSTGRES_USER: healtrip
+      POSTGRES_PASSWORD: healtrip   # local dev only, never used outside docker
+      POSTGRES_DB: healtrip
+    ports:
+      - "5433:5432"                 # 5433 on host to avoid clashing with a local Postgres
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U healtrip"]
+      interval: 3s
+      retries: 20
+
+volumes:
+  pgdata:

@@ -6,3 +6,6 @@ dist/
 .next/
 .DS_Store
 MILESTONES.md
+.venv/
+__pycache__/
+.pytest_cache/
