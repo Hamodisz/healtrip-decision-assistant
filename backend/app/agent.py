@@ -373,7 +373,9 @@ def _ask(llm, s, lang, key, result, trace, agent="reception", prefix="") -> Turn
               + f"ask exactly this question in your own words: \"{template}\". "
               "Maximum 2 sentences. Do not diagnose, do not name conditions, do not give medical advice.")
     try:
-        text = llm.chat([{"role": "system", "content": prompt}, *s.history[-HISTORY_WINDOW:]]).get("content") or template
+        # Live finding: told "do not thank", the model still added "Thanks, that's verified" after our
+        # fixed "I found your file." A prompt isn't a guarantee, so after a fixed prefix we don't ask the model.
+        text = template if prefix else (llm.chat([{"role": "system", "content": prompt}, *s.history[-HISTORY_WINDOW:]]).get("content") or template)
     except LLMUnavailable:
         text = template  # the question is fixed text anyway: degrade to it
     text, blocked = no_diagnosis.enforce(text, lang)
