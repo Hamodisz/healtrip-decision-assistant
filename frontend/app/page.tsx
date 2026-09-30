@@ -75,10 +75,10 @@ export default function Page() {
           const emergency = turn?.triage && ["emergency", "urgent"].includes(turn.triage.care_path)
           return (
             <div key={i}>
-              {handoff && <div className="handoff">{t.handoff} {turn!.clinic ? `${turn!.clinic} — ` : ""}{t.clinic}</div>}
+              {handoff && <div className="handoff">{t.handoff} {clinicLabel(turn!.clinic, ar)}</div>}
               <div className={`row ${m.role}`}>
                 <div className={`bubble ${m.role} ${emergency ? "emergency" : ""}`}>
-                  {m.role === "assistant" && turn && <div className="who">{turn.agent === "reception" ? t.reception : `${turn.clinic ?? ""} ${t.clinic}`}</div>}
+                  {m.role === "assistant" && turn && <div className="who">{turn.agent === "reception" ? t.reception : clinicLabel(turn.clinic, ar)}</div>}
                   <div className="text">{turn ? withNames(m.text, turn.providers, ar) : m.text}</div>
                   {m.ticket && <div className="ticket"><span>{t.ticket}</span><strong>{m.ticket}</strong></div>}
                 </div>
@@ -127,6 +127,12 @@ export default function Page() {
       <p className="muted small">{t.disclaimer}</p>
     </main>
   )
+}
+
+// Word order differs by language: "Cardiology clinic assistant" vs "مساعد عيادة أمراض القلب".
+function clinicLabel(clinic: string | null, ar: boolean) {
+  if (ar) return clinic ? `مساعد عيادة ${clinic}` : "مساعد العيادة"
+  return clinic ? `${clinic} clinic assistant` : "Clinic assistant"
 }
 
 // The model refers to doctors only by ID ([DOC-001]); the name shown comes from the DB card in the same response.
