@@ -54,27 +54,63 @@ def db():
         yield s
 
 
-def test_full_chest_pain_conversation_asks_then_recommends_real_doctors(db):
+def test_full_workflow_reception_file_triage_handoff_confirm_recommend(db):
+    """The hospital-reception workflow end to end (patient MRN-100001 is fictional seed data)."""
     s = ChatSession()
     llm = FakeLLM(
-        facts(chief_complaint="chest_pain"), text("I understand. Is the pain happening right now?"),
-        facts(pain_now=False), text("Thanks. Any shortness of breath, fainting, sweating or spreading pain?"),
+        facts(chief_complaint="chest_pain"), text("Is the pain happening right now?"),          # 1 safety first
+        facts(pain_now=False), text("Do you have a file with us?"),                           # 2 reception
+        facts(has_file=True, file_number="MRN-100001"), text("What is your date of birth?"),   # 3 verify
+        facts(date_of_birth="1971-04-12"), text("Any shortness of breath, fainting, sweating or spreading pain?"),  # 4 file found
         facts(**NO_SYMPTOMS), text("When did it start?"),
-        facts(onset="weeks_or_more", city="Riyadh", language="ar"), text("Do you have a diagnosis to review?"),
-        facts(has_diagnosis_to_review=False),
-        tool("search_providers", city="Riyadh", language="ar"),
-        text("A cardiologist is the right next step. [DOC-001] is available in Riyadh."),
+        facts(onset="weeks_or_more", city="Riyadh"), text("Do you have a diagnosis to review?"),
+        facts(has_diagnosis_to_review=False),                                                   # 7 → handoff (template, no LLM)
+        facts(summary_confirmed=True), tool("search_providers", city="Riyadh"),                 # 8 confirmed → doctors
+        text("A cardiologist is the right next step: [DOC-001]."),
     )
-    turns = ["I have chest pain and I'm not sure whether I should see a cardiologist, go to the ER, or seek a second opinion.",
-             "no", "none of those", "a few weeks ago, I'm in Riyadh and prefer Arabic", "no"]
-    results = [run_turn(db, llm, s, m) for m in turns]
+    msgs = ["I have chest pain and I'm not sure whether I should see a cardiologist, go to the ER, or seek a second opinion.",
+            "no", "yes, MRN-100001", "12 April 1971", "none of those", "a few weeks ago, I'm in Riyadh", "no", "yes that's correct"]
+    r = [run_turn(db, llm, s, m) for m in msgs]
 
-    assert [r.triage.rule_id for r in results] == ["Q_PAIN_NOW", "Q_ASSOCIATED", "Q_ONSET", "Q_REVIEW", "S_CARDIOLOGY"]
-    last = results[-1]
-    assert last.triage.care_path is CarePath.specialist
-    assert {p["doctor_id"] for p in last.providers} == {"DOC-001"}  # the only Riyadh cardiologist speaking ar
-    assert "[DOC-001]" in last.reply and last.blocked == []
-    assert any(t.get("tool") == "search_providers" for t in last.trace)
+    assert r[0].triage.rule_id == "Q_PAIN_NOW"                       # never ask for a file before this
+    assert [x.agent for x in r[1:3]] == ["reception", "reception"]
+    assert r[3].reply.startswith("Thank you, Mr. Ahmed. I found your file.")
+    handoff = r[6]
+    assert handoff.agent == "clinic_assistant" and handoff.clinic == "Cardiology"
+    assert "Hello Mr. Ahmed" in handoff.reply and "Hypertension" in handoff.reply and "Penicillin" in handoff.reply  # from the DB file
+    assert "Is this correct?" in handoff.reply and handoff.providers == []    # nothing offered before confirmation
+    last = r[7]
+    assert [p["doctor_id"] for p in last.providers] == ["DOC-001"]
+    assert {o["offer_id"] for o in last.offers} == {"OFF-001"}  # cardiac check-up; no travel offers for a Riyadh doctor
+    assert s.patient_id is not None and "file_number" not in s.reception  # identifiers dropped after the check
+
+
+def test_wrong_date_of_birth_reveals_nothing_and_three_failures_continue_as_guest(db):
+    s = ChatSession(facts=agent.PatientFacts(chief_complaint="chest_pain", pain_now=False))
+    replies = []
+    for _ in range(3):
+        llm = FakeLLM(facts(file_number="MRN-100001", date_of_birth="1999-01-01"), text("could not verify"))
+        replies.append(run_turn(db, llm, s, "MRN-100001, born 1 Jan 1999"))
+    assert s.patient_id is None and s.is_guest and s.verify_attempts == 3
+    assert all("Ahmed" not in x.reply for x in replies)  # never confirms that the file exists
+
+
+def test_no_file_continues_as_guest(db):
+    s = ChatSession(facts=agent.PatientFacts(chief_complaint="chest_pain", pain_now=False))
+    r = run_turn(db, FakeLLM(facts(has_file=False), text("Any shortness of breath...?")), s, "no I don't have a file")
+    assert s.is_guest and r.reply.startswith("No problem, we'll continue without a file.")
+
+
+def test_patient_says_summary_is_wrong(db):
+    s = _decided_session()
+    s.stage, s.confirmed = "confirm", False
+    r = run_turn(db, FakeLLM(facts(summary_confirmed=False)), s, "no, that's not right")
+    assert r.reply == agent.CORRECTION_TEXT["en"] and r.providers == [] and not s.confirmed
+
+
+def test_offers_never_on_emergency(db):
+    r = run_turn(db, FakeLLM(), _decided_session(), "I can't breathe")
+    assert r.offers == [] and r.providers == []
 
 
 def test_emergency_from_facts_stops_before_any_provider_search(db):
@@ -100,8 +136,10 @@ def test_once_emergency_the_session_stays_emergency(db):
 
 
 def _decided_session():
+    """A guest who has passed reception and confirmed the clinic assistant's summary."""
     return ChatSession(facts=agent.PatientFacts(chief_complaint="chest_pain", pain_now=False, onset="days",
-                                                has_diagnosis_to_review=False, **NO_SYMPTOMS))
+                                                has_diagnosis_to_review=False, **NO_SYMPTOMS),
+                       stage="recommend", confirmed=True, is_guest=True)
 
 
 def test_invented_doctor_is_never_shown(db):
@@ -185,3 +223,11 @@ def test_missed_answer_gets_one_focused_retry_instead_of_repeating_the_question(
     r = run_turn(db, llm, s, "لا ما عندي تشخيص")
     assert r.triage.rule_id == "S_CARDIOLOGY"
     assert any(t.get("step") == "extract_focused_retry" for t in r.trace)
+
+
+def test_english_file_summary_uses_english_punctuation(db):
+    from app import patients
+    from app.models import Patient
+    p = db.query(Patient).filter_by(file_number="MRN-100001").one()
+    assert "Hypertension, Type 2 diabetes" in patients.file_summary(db, p, "en")
+    assert "،" in patients.file_summary(db, p, "ar")

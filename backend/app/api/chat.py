@@ -65,6 +65,10 @@ class ChatResponse(BaseModel):
     providers: list[dict]        # DB rows only: the UI renders these, never the model's text
     hospitals: list[dict]
     slots: list[dict]            # open times from the DB; the patient confirms one via POST /bookings
+    offers: list[dict]           # optional services (DB rows), only after a confirmed, non-urgent decision
+    agent: str                   # "reception" | "clinic_assistant": the UI shows the handoff
+    clinic: str | None
+    patient_name: str | None     # set only after identity verification
     trace: list[dict]            # what happened this turn (facts → rule → tools); no patient text
     disclaimer: str = "Prototype with mock data. Not medical advice; this assistant does not diagnose."
 
@@ -74,7 +78,8 @@ def chat(req: ChatRequest, db: Annotated[Session, Depends(get_session)], llm: An
     s = _get_or_create(req.session_id)
     r = run_turn(db, llm, s, req.message.strip(), req.language)
     return ChatResponse(session_id=s.id, reply=r.reply, language=r.language, triage=r.triage,
-                        providers=r.providers, hospitals=r.hospitals, slots=r.slots, trace=r.trace)
+                        providers=r.providers, hospitals=r.hospitals, slots=r.slots, offers=r.offers,
+                        agent=r.agent, clinic=r.clinic, patient_name=s.patient_name, trace=r.trace)
 
 
 class BookingRequest(BaseModel):
@@ -113,7 +118,7 @@ def confirm_booking(req: BookingRequest, db: Annotated[Session, Depends(get_sess
         raise HTTPException(status_code=409, detail="This time was not offered in this conversation.")
     try:
         with db.begin():
-            booking = repo.book_slot(db, req.slot_id)
+            booking = repo.book_slot(db, req.slot_id, patient_id=s.patient_id)
             notifications.enqueue_for_booking(db, booking)   # same transaction: outbox
             doctor = repo.get_doctor(db, booking.doctor_id)
             slot, ticket = slot_card(booking.slot, doctor), booking.ticket_number

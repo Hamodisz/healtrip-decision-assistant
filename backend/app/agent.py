@@ -18,7 +18,9 @@ from dataclasses import dataclass, field
 from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.orm import Session
 
-from app import no_diagnosis, red_flags, repository as repo
+from datetime import date
+
+from app import no_diagnosis, offers, patients, red_flags, repository as repo
 from app.llm import LLM, LLMUnavailable
 from app.tools import TOOL_SCHEMAS, ToolGateway, hospital_card
 from app.triage import (EMERGENCY_MESSAGE, URGENT_MESSAGE, CarePath, PatientFacts, TriageResult,
@@ -41,6 +43,14 @@ class ChatSession:
     care_path: CarePath | None = None                  # last decided path: booking is only allowed on bookable paths
     offered_slot_ids: set[int] = field(default_factory=set)   # patient can only confirm a slot we offered
     last_ask: list[str] = field(default_factory=list)  # fields the previous turn asked about
+    # Reception / handoff state
+    stage: str = "reception"                           # reception → triage → confirm → recommend
+    reception: dict = field(default_factory=dict)      # has_file / identifiers / dob: transient, cleared after check
+    patient_id: int | None = None                      # set only after identity verification
+    patient_name: str | None = None                    # "Mr. Ahmed" for greetings
+    is_guest: bool = False
+    verify_attempts: int = 0
+    confirmed: bool = False                            # patient confirmed the clinic assistant's summary
 
 
 @dataclass
@@ -51,12 +61,21 @@ class TurnResult:
     providers: list[dict] = field(default_factory=list)
     hospitals: list[dict] = field(default_factory=list)
     slots: list[dict] = field(default_factory=list)
+    offers: list[dict] = field(default_factory=list)
+    agent: str = "reception"                           # which assistant is speaking (UI shows the handoff)
+    clinic: str | None = None
     trace: list[dict] = field(default_factory=list)
     blocked: list[str] = field(default_factory=list)   # what the output checks removed (for transparency)
 
 
 # ── Fixed texts (reviewed once; used when the LLM is unavailable or its reply is rejected) ──
 QUESTIONS = {
+    "has_file": {"en": "Before we continue, do you already have a patient file with us? If so, please share your file number (e.g. MRN-100001) or your national ID.",
+                 "ar": "قبل أن نكمل، هل لديك ملف طبي لدينا؟ إذا نعم، أرسل رقم الملف (مثل MRN-100001) أو رقم الهوية."},
+    "date_of_birth": {"en": "Thank you. To verify it's you, what is your date of birth?",
+                      "ar": "شكرًا لك. للتحقق من هويتك، ما هو تاريخ ميلادك؟"},
+    "reverify": {"en": "I couldn't verify these details. Please check your file number or national ID and date of birth, or tell me if you'd like to continue without a file.",
+                 "ar": "لم أتمكن من التحقق من هذه البيانات. يُرجى التأكد من رقم الملف أو الهوية وتاريخ الميلاد، أو أخبرني إذا كنت تريد المتابعة بدون ملف."},
     "chief_complaint": {"en": "What is the main health concern you'd like help with?",
                         "ar": "ما هي المشكلة الصحية الأساسية التي تريد المساعدة بها؟"},
     "pain_now": {"en": "Is the chest pain happening right now?", "ar": "هل ألم الصدر موجود الآن؟"},
@@ -79,6 +98,19 @@ PATH_TEXT = {
     CarePath.routine: {"en": "Based on your answers, the right next step is a visit to a family medicine doctor.",
                        "ar": "بناءً على إجاباتك، الخطوة المناسبة التالية هي زيارة طبيب أسرة."},
 }
+RECEPTION_TEXT = {
+    "found": {"en": "Thank you, {name}. I found your file.", "ar": "شكرًا {name}، وجدت ملفك."},
+    "guest": {"en": "No problem, we'll continue without a file.", "ar": "لا مشكلة، سنكمل بدون ملف."},
+    "give_up": {"en": "I couldn't verify your file, so we'll continue without it for now. Our team can link it later.",
+                "ar": "لم أتمكن من التحقق من ملفك، لذا سنكمل بدونه الآن ويمكن لفريقنا ربطه لاحقًا."},
+}
+HANDOFF_TEXT = {
+    "en": "Thank you. I'm transferring you to the {clinic} clinic assistant.\n\nHello{name}, I'm the {clinic} clinic assistant. {file}{facts} Is this correct?",
+    "ar": "شكرًا لك. سأحوّلك الآن إلى مساعد عيادة {clinic}.\n\nأهلًا{name}، أنا مساعد عيادة {clinic}. {file}{facts} هل هذه المعلومات صحيحة؟",
+}
+CORRECTION_TEXT = {"en": "Thanks for telling me. What should I correct?", "ar": "شكرًا لتوضيحك. ما الذي يجب تصحيحه؟"}
+OFFERS_NOTE = {"en": " Optional services that fit this visit are shown below.",
+               "ar": " تظهر بالأسفل خدمات اختيارية تناسب هذه الزيارة."}
 OPTIONS_TEXT = {"en": " These are matching options from the HealTrip provider network:",
                 "ar": " هذه خيارات مطابقة من شبكة مقدمي الخدمة في HealTrip:"}
 NO_RESULTS = {"en": "I couldn't find a matching provider in the current HealTrip provider database.",
@@ -121,6 +153,12 @@ EXTRACT_TOOL = {"type": "function", "function": {
         "review_specialty": {"type": "string", "enum": ["cardiology", "cardiac_surgery", "internal_medicine", "pulmonology",
                                                          "gastroenterology", "orthopedics", "neurology"],
                              "description": "Specialty of the doctor who made the existing diagnosis (heart/valve → cardiology)"},
+        "has_file": {"type": "boolean", "description": "Patient says they have (true) or don't have (false) a patient file"},
+        "file_number": {"type": "string", "description": "Patient file number, format MRN-123456"},
+        "national_id": {"type": "string", "description": "10-digit national ID or iqama number"},
+        "date_of_birth": {"type": "string", "description": "Date of birth as YYYY-MM-DD"},
+        "summary_confirmed": {"type": "boolean", "description": "ONLY if the assistant's last message asked the patient to confirm a "
+                                                                "summary: true if they confirmed, false if they said something is wrong"},
         "city": {"type": "string", "description": "City the patient wants care in, in English"},
         "country": {"type": "string", "description": "ISO-2 country code"},
         "language": {"type": "string", "description": "ISO-639-1 language the patient wants the doctor to speak"},
@@ -143,6 +181,14 @@ def _merge_facts(s: ChatSession, args: dict) -> None:
     for k in ("city", "country", "language"):
         if args.get(k):
             s.prefs[k] = args[k]
+    for k in ("has_file", "file_number", "national_id", "summary_confirmed"):
+        if args.get(k) is not None:
+            s.reception[k] = args[k]
+    if args.get("date_of_birth"):
+        try:
+            s.reception["date_of_birth"] = date.fromisoformat(str(args["date_of_birth"])[:10])
+        except ValueError:
+            pass
 
 
 def extract(llm: LLM, s: ChatSession) -> None:
@@ -234,7 +280,7 @@ def run_turn(db: Session, llm: LLM, s: ChatSession, message: str, lang_hint: str
             trace.append({"step": "extract_focused_retry", "fields": s.last_ask, "facts": s.facts.model_dump(exclude_none=True)})
         except LLMUnavailable:
             pass
-    s.last_ask = result.ask_next
+    s.last_ask = []  # set again only if this turn actually asks a question (see _ask)
     trace.append({"step": "triage", "care_path": result.care_path.value, "rule": result.rule_id, "ask_next": result.ask_next})
 
     # 4a. Emergency / urgent.
@@ -242,19 +288,89 @@ def run_turn(db: Session, llm: LLM, s: ChatSession, message: str, lang_hint: str
         s.emergency_locked = result.care_path is CarePath.emergency
         return _finish(s, _safety_turn(db, s, lang, result, trace))
 
+    # Reception: find the patient's file. Safety first: while we don't know whether chest pain is
+    # happening RIGHT NOW, we ask that before asking anyone to look for a file number.
+    prefix = ""
+    if s.stage == "reception" and result.rule_id != "Q_PAIN_NOW":
+        key, prefix = _reception(db, s, lang, trace)
+        if key:
+            return _finish(s, _ask(llm, s, lang, key, result, trace, agent="reception"))
+
     # 4b. Ask what the rules need.
     if result.care_path is CarePath.need_more_info:
         key = "associated" if len(result.ask_next) > 1 else result.ask_next[0]
-        return _finish(s, _ask(llm, s, lang, key, result, trace))
+        return _finish(s, _ask(llm, s, lang, key, result, trace, prefix=prefix))
 
-    # 4c. Path decided: tools.
+    # 4c. Path decided → hand off to the clinic assistant, who confirms the summary before anything is offered.
+    if not s.confirmed:
+        answer = s.reception.pop("summary_confirmed", None) if s.stage == "confirm" else None
+        if answer is True:
+            s.confirmed, s.stage = True, "recommend"
+            trace.append({"step": "summary_confirmed"})
+        elif answer is False:
+            trace.append({"step": "summary_rejected"})
+            return _finish(s, TurnResult(reply=CORRECTION_TEXT[lang], language=lang, triage=result,
+                                         agent="clinic_assistant", clinic=_clinic(db, result, lang), trace=trace))
+        else:
+            s.stage = "confirm"
+            return _finish(s, _handoff(db, s, lang, result, trace))
     return _finish(s, _recommend(db, llm, s, lang, result, trace))
 
 
-def _ask(llm, s, lang, key, result, trace) -> TurnResult:
+def _reception(db, s, lang, trace) -> tuple[str | None, str]:
+    """Returns (question key to ask, or None when reception is done; text to prefix the next reply)."""
+    rec = s.reception
+    if rec.get("has_file") is False and not (rec.get("file_number") or rec.get("national_id")):
+        s.is_guest, s.stage = True, "triage"
+        trace.append({"step": "reception", "result": "guest"})
+        return None, RECEPTION_TEXT["guest"][lang] + " "
+    ident = rec.get("file_number") or rec.get("national_id")
+    if ident and rec.get("date_of_birth"):
+        p = patients.verify(db, str(ident), rec["date_of_birth"])
+        for k in ("file_number", "national_id", "date_of_birth"):
+            rec.pop(k, None)  # identifiers are not kept once checked
+        if p:
+            s.patient_id, s.patient_name, s.stage = p.id, patients.greeting_name(p, lang), "triage"
+            trace.append({"step": "reception", "result": "verified", "patient_id": p.id})
+            return None, RECEPTION_TEXT["found"][lang].format(name=s.patient_name) + " "
+        s.verify_attempts += 1
+        trace.append({"step": "reception", "result": "not_verified", "attempt": s.verify_attempts})
+        if s.verify_attempts >= patients.MAX_VERIFY_ATTEMPTS:
+            s.is_guest, s.stage = True, "triage"
+            return None, RECEPTION_TEXT["give_up"][lang] + " "
+        return "reverify", ""
+    if ident:
+        return "date_of_birth", ""
+    return "has_file", ""
+
+
+def _clinic(db, result: TriageResult, lang: str) -> str | None:
+    from app.models import Specialty
+    sp = db.get(Specialty, result.specialty) if result.specialty else None
+    return (sp.name_ar if lang == "ar" else sp.name_en) if sp else None
+
+
+def _handoff(db, s, lang, result, trace) -> TurnResult:
+    """Fixed template filled from the DB file + structured facts. No LLM text: a medical record
+    must never be paraphrased by a model."""
+    from app.models import Patient
+    p = db.get(Patient, s.patient_id) if s.patient_id else None
+    clinic = _clinic(db, result, lang) or ""
+    text = HANDOFF_TEXT[lang].format(
+        clinic=clinic, name=(" " + s.patient_name) if s.patient_name else "",
+        file=(patients.file_summary(db, p, lang) + " ") if p else "",
+        facts=patients.facts_summary(s.facts, lang))
+    trace.append({"step": "handoff", "clinic": result.specialty, "patient_file": bool(p)})
+    return TurnResult(reply=text, language=lang, triage=result, agent="clinic_assistant", clinic=clinic, trace=trace)
+
+
+def _ask(llm, s, lang, key, result, trace, agent="reception", prefix="") -> TurnResult:
+    # Remember what was ACTUALLY asked: a reception question must not look like a missed triage answer.
+    s.last_ask = result.ask_next if key not in ("has_file", "date_of_birth", "reverify") else [key]
     template = QUESTIONS[key][lang]
     prompt = (f"You are HealTrip's care-navigation assistant. Reply in {'Arabic' if lang == 'ar' else 'English'}. "
-              f"Briefly acknowledge the patient, then ask exactly this question in your own words: \"{template}\". "
+              + ("Do NOT thank or acknowledge (that was already done); " if prefix else "Briefly acknowledge the patient, then ")
+              + f"ask exactly this question in your own words: \"{template}\". "
               "Maximum 2 sentences. Do not diagnose, do not name conditions, do not give medical advice.")
     try:
         text = llm.chat([{"role": "system", "content": prompt}, *s.history[-HISTORY_WINDOW:]]).get("content") or template
@@ -263,8 +379,8 @@ def _ask(llm, s, lang, key, result, trace) -> TurnResult:
     text, blocked = no_diagnosis.enforce(text, lang)
     if blocked:
         text = no_diagnosis.SAFE_REPLY[lang] + " " + template
-    trace.append({"step": "ask", "question_for": result.ask_next, "blocked": blocked})
-    return TurnResult(reply=text, language=lang, triage=result, trace=trace, blocked=blocked)
+    trace.append({"step": "ask", "question_for": [key], "blocked": blocked})
+    return TurnResult(reply=prefix + text, language=lang, triage=result, trace=trace, blocked=blocked, agent=agent)
 
 
 def _recommend(db, llm, s, lang, result, trace) -> TurnResult:
@@ -322,9 +438,18 @@ def _recommend(db, llm, s, lang, result, trace) -> TurnResult:
             text = fallback
     s.known_doctor_ids |= set(gw.doctors)
     s.offered_slot_ids |= set(gw.slots)
+    offer_cards = []
+    if gw.doctors and not gw.db_failed and not gw.slots:
+        try:
+            offer_cards = offers.select_offers(db, result, {c["country"] for c in gw.doctors.values()})
+        except SQLAlchemyError:
+            offer_cards = []  # offers are optional; never block the clinical answer
+        if offer_cards:
+            text += OFFERS_NOTE[lang]
     trace.append({"step": "recommend", "providers": list(gw.doctors), "blocked": blocked})
     return TurnResult(reply=text, language=lang, triage=result, providers=list(gw.doctors.values()),
-                      hospitals=list(gw.hospitals.values()), slots=list(gw.slots.values()), trace=trace, blocked=blocked)
+                      hospitals=list(gw.hospitals.values()), slots=list(gw.slots.values()), offers=offer_cards,
+                      agent="clinic_assistant", clinic=_clinic(db, result, lang), trace=trace, blocked=blocked)
 
 
 def _finish(s: ChatSession, r: TurnResult) -> TurnResult:

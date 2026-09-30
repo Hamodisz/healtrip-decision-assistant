@@ -17,7 +17,7 @@ from zoneinfo import ZoneInfo
 from sqlalchemy import text
 
 from app.db import Base, SessionLocal, engine
-from app.models import Doctor, Hospital, Slot, Specialty
+from app.models import Doctor, Hospital, Offer, Patient, Slot, Specialty
 
 SPECIALTIES = [
     ("cardiology", "Cardiology", "أمراض القلب",
@@ -67,6 +67,40 @@ DOCTORS = [
     ("DOC-013", "Dr. Ayse Demir", "د. عائشة دمير", "orthopedics", "HOSP-005", ["tr", "en", "ar"], 17, True, True, 140, "USD"),
     ("DOC-014", "Dr. Jonas Richter", "د. يوناس ريشتر", "neurology", "HOSP-006", ["de", "en"], 20, True, True, 280, "EUR"),
     ("DOC-015", "Dr. Mehmet Arslan", "د. محمد أرسلان", "cardiac_surgery", "HOSP-005", ["tr", "en", "ar"], 24, True, True, 200, "USD"),
+]
+
+# Fictional patients. file_number, national_id, dob, name_en, name_ar, sex, city, lang, conditions, allergies, last visit, specialty
+PATIENTS = [
+    ("MRN-100001", "1000000001", date(1971, 4, 12), "Ahmed Al-Qurashi", "أحمد القرشي", "M", "Riyadh", "ar",
+     ["Hypertension", "Type 2 diabetes"], ["Penicillin"], date(2026, 3, 2), "internal_medicine"),
+    ("MRN-100002", "1000000002", date(1985, 9, 30), "Sara Al-Mutairi", "سارة المطيري", "F", "Jeddah", "ar",
+     [], [], date(2025, 11, 18), "family_medicine"),
+    ("MRN-100003", "2000000003", date(1962, 1, 5), "John Miller", "جون ميلر", "M", "Riyadh", "en",
+     ["Mitral valve regurgitation"], ["Aspirin"], date(2026, 8, 20), "cardiology"),
+    ("MRN-100004", "1000000004", date(1994, 6, 21), "Noura Al-Ghamdi", "نورة الغامدي", "F", "Riyadh", "ar",
+     ["Asthma"], [], None, None),
+]
+
+# id, kind, title_en, title_ar, desc_en, desc_ar, paths, specialty, requires_travel, price, currency
+OFFERS = [
+    ("OFF-001", "cross_sell", "Cardiac check-up package", "باقة فحص القلب",
+     "ECG, echocardiogram and lipid panel on the same visit.", "تخطيط قلب وإيكو وتحليل دهون في نفس الزيارة.",
+     ["specialist", "second_opinion"], "cardiology", False, 950, "SAR"),
+    ("OFF-002", "cross_sell", "Medical report translation", "ترجمة التقارير الطبية",
+     "Certified translation of your reports (Arabic ⇄ English / German / Turkish).", "ترجمة معتمدة لتقاريرك (عربي ⇄ إنجليزي / ألماني / تركي).",
+     ["second_opinion"], None, False, 300, "SAR"),
+    ("OFF-003", "cross_sell", "Travel & visa package", "باقة السفر والتأشيرة",
+     "Visa support, hotel near the hospital and airport transfer.", "دعم التأشيرة وفندق قريب من المستشفى وتوصيل من المطار.",
+     ["specialist", "second_opinion"], None, True, 2500, "SAR"),
+    ("OFF-004", "upsell", "Priority remote review (48h)", "مراجعة عن بُعد بأولوية (48 ساعة)",
+     "Your records reviewed by the doctor within 48 hours instead of 7 days.", "مراجعة ملفاتك من الطبيب خلال 48 ساعة بدلاً من 7 أيام.",
+     ["second_opinion"], None, False, 700, "SAR"),
+    ("OFF-005", "upsell", "VIP concierge", "خدمة كبار الشخصيات",
+     "Dedicated coordinator, private transfer and companion accommodation.", "منسق خاص وتوصيل خاص وسكن للمرافق.",
+     ["specialist", "second_opinion"], None, True, 4000, "SAR"),
+    ("OFF-006", "cross_sell", "Annual health check", "الفحص الصحي السنوي",
+     "Comprehensive yearly screening with your family doctor.", "فحص شامل سنوي مع طبيب الأسرة.",
+     ["routine"], "family_medicine", False, 600, "SAR"),
 ]
 
 # Weekend days per country (Python weekday(): Mon=0 ... Sun=6)
@@ -124,7 +158,13 @@ def seed(start: date | None = None) -> dict[str, int]:
         s.flush()
         slots = build_slots(DOCTORS, hospitals, start)
         s.add_all(slots)
-    return {"specialties": len(SPECIALTIES), "hospitals": len(HOSPITALS), "doctors": len(DOCTORS), "slots": len(slots)}
+        s.add_all(Patient(file_number=p[0], national_id=p[1], date_of_birth=p[2], name_en=p[3], name_ar=p[4], sex=p[5],
+                          city=p[6], preferred_language=p[7], known_conditions=p[8], allergies=p[9],
+                          last_visit_date=p[10], last_visit_specialty=p[11]) for p in PATIENTS)
+        s.add_all(Offer(id=o[0], kind=o[1], title_en=o[2], title_ar=o[3], description_en=o[4], description_ar=o[5],
+                        applicable_paths=o[6], specialty_code=o[7], requires_travel=o[8], price=o[9], currency=o[10])
+                  for o in OFFERS)
+    return {"patients": len(PATIENTS), "offers": len(OFFERS), "specialties": len(SPECIALTIES), "hospitals": len(HOSPITALS), "doctors": len(DOCTORS), "slots": len(slots)}
 
 
 if __name__ == "__main__":

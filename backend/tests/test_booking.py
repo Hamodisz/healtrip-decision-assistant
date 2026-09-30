@@ -13,7 +13,8 @@ from tests.test_agent import NO_SYMPTOMS, FakeLLM, facts, text, tool
 
 def _decided_session_in_store() -> ChatSession:
     s = ChatSession(facts=PatientFacts(chief_complaint="chest_pain", pain_now=False, onset="days",
-                                       has_diagnosis_to_review=False, **NO_SYMPTOMS))
+                                       has_diagnosis_to_review=False, **NO_SYMPTOMS),
+                    stage="recommend", confirmed=True, is_guest=True)
     chat_api._sessions[s.id] = (0.0, s)
     return s
 
@@ -133,3 +134,17 @@ def test_rolled_back_booking_notifies_no_one():
     with SessionLocal() as db:
         assert db.scalar(select(func.count(Notification.id))) == before
         assert slot_id in {x.id for x in repo.available_slots(db, "DOC-007", limit=20)}
+
+
+def test_verified_patient_booking_links_the_file_for_the_hospital(client):
+    from app.models import Patient
+    s = _decided_session_in_store()
+    with SessionLocal() as db:
+        s.patient_id = db.query(Patient).filter_by(file_number="MRN-100003").one().id
+    _chat(client, s, "Riyadh", FakeLLM(facts(city="Riyadh"), tool("search_providers", city="Riyadh"), text("[DOC-001]")))
+    body = _chat(client, s, "times?", FakeLLM(facts(), tool("get_available_slots", doctor_id="DOC-001"), text("Tap Confirm.")))
+    b = client.post("/api/v1/bookings", json={"session_id": s.id, "slot_id": body["slots"][3]["slot_id"]}).json()
+    inbox = [n for n in client.get("/api/v1/hospital/inbox").json() if n["ticket_number"] == b["ticket_number"]]
+    his = next(n for n in inbox if n["channel"] == "hospital_system")
+    assert "Patient/MRN-100003" in his["body"]
+    assert "Mitral" not in str(inbox)  # the file is linked, the medical history is not sent

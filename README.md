@@ -31,6 +31,54 @@ The engineering principle throughout:
 
 ---
 
+## Patient workflow (how a hospital reception works)
+
+The assistant follows the same path as a real hospital front desk, with safety checked before any paperwork:
+
+```
+ ┌──────────────────────────────────────────────────────────────────────────────────────────┐
+ │ EVERY message: red-flag check (code). "I can't breathe" / "أغمي علي" → emergency now,     │
+ │ fixed message + nearest ER hospitals. No reception, no questions, no booking.             │
+ └──────────────────────────────────────────────────────────────────────────────────────────┘
+   1  SAFETY FIRST     "Is the chest pain happening right now?"
+                        (asked BEFORE the file number: nobody with active chest pain looks for paperwork)
+   2  RECEPTION        "Do you have a patient file with us? File number or national ID?"
+                        → "What is your date of birth?"  → verified in code → "Thank you, Mr. Ahmed. I found your file."
+                        (no file / 3 failed checks → continue as a guest)
+   3  TRIAGE           only the questions that can still change the decision; rules pick the clinic
+   4  HANDOFF          "I'm transferring you to the Cardiology clinic assistant."
+                        "Hello Mr. Ahmed. From your file: hypertension, type 2 diabetes; allergy: penicillin;
+                         last visit 2026-03-02 (Internal Medicine). From what you told me today: chest pain,
+                         not now, started weeks ago, no warning symptoms. Is this correct?"
+                        (template filled from the DB + structured facts: the LLM never paraphrases a medical file)
+   5  CONFIRM          patient says yes → continue · says no → "What should I correct?"
+   6  DOCTORS + OFFERS matching doctors from the DB + optional services (cross-sell / upsell), only now
+   7  SCHEDULE         real open times → patient taps Confirm (the AI cannot book)
+   8  TICKET           DB-generated ticket HT-2026-000123 → doctor e-mail + hospital-system message (mocked)
+```
+
+**A real run** (DeepSeek, fictional patient file `MRN-100001`), abridged:
+
+| Patient | Assistant |
+|---|---|
+| I have chest pain and I'm not sure whether I should see a cardiologist, go to the ER, or seek a second opinion. | *[reception]* I understand your concern… Is the chest pain happening right now? |
+| No, not right now | Thank you for clarifying. Before we continue, do you already have a patient file with us? … file number or national ID. |
+| Yes, my file number is MRN-100001 | Thank you. To verify it's you, what is your date of birth? |
+| 12/04/1971 | Thank you, Mr. Ahmed. I found your file. Do you have any of these: shortness of breath, fainting or dizziness, sweating or nausea, or pain spreading…? |
+| None of those | When did the chest pain first start…? |
+| About three weeks ago. I am in Riyadh | Have you already been given a diagnosis… you'd like another doctor to review? |
+| No | *[Cardiology clinic assistant]* Hello Mr. Ahmed… From your file: … From what you told me today: … Is this correct? |
+| Yes, that is correct | The next step is a cardiology assessment in Riyadh. A matching cardiologist is **[DOC-001]**… *(cards: Dr. Faisal Al-Harbi · offer: Cardiac check-up package)* |
+| What times does the doctor have? | [DOC-001] has open in-person times… tap Confirm on the time you want. *(09:00 · 10:00 · 11:00)* |
+
+Why each step is where it is:
+- **Safety before identity.** Emergency detection runs on every message, and "is it happening now?" comes before the file number.
+- **Identity is verified, not assumed.** A file number alone isn't enough: it must match the date of birth. A failed check says "I couldn't verify these details" and never reveals whether a file exists. After 3 failures the patient continues as a guest. The identifiers are dropped from the session once checked. (Production: Nafath / OTP.)
+- **The clinic assistant repeats back and asks for confirmation** before anything is offered, so a misunderstood fact is caught by the patient, not discovered at the clinic.
+- **Selling happens only after a confirmed, non-urgent decision.** It is never shown on emergency paths and never influences which clinic was chosen.
+
+---
+
 ## 2. Architecture
 
 ```
@@ -52,6 +100,8 @@ The engineering principle throughout:
                                             ┌───────────────────────────────────────────────┐
                                             │ PostgreSQL (source of truth)                  │
                                             │ specialties · hospitals · doctors · slots     │
+                                            │ patients (CRM file) · offers · bookings ·     │
+                                            │ notifications (outbox)                        │
                                             └───────────────────────────────────────────────┘
 ```
 
@@ -290,10 +340,20 @@ id PK · doctor_id FK → doctors · starts_at (timestamptz) · duration_min
 mode (in_person | remote) · status (open | held | booked) · held_until
 UNIQUE (doctor_id, starts_at) · CHECK status/mode · INDEX (doctor_id, status, starts_at)
 
+patients (mock CRM file)
+────────
+id PK · file_number UNIQUE (MRN-100001) · national_id UNIQUE · date_of_birth · name_en / name_ar · sex
+city · preferred_language · known_conditions[] · allergies[] · last_visit_date · last_visit_specialty FK
+
+offers
+──────
+id PK (OFF-001) · kind (cross_sell | upsell) · title/description en+ar · applicable_paths[]
+specialty_code FK? · requires_travel · price · currency
+
 bookings (M5)
 ────────
 id PK · ticket_number UNIQUE, DEFAULT 'HT-' || year || '-' || lpad(nextval('ticket_seq'), 6, '0')
-slot_id UNIQUE FK → slots · doctor_id FK → doctors · created_at
+slot_id UNIQUE FK → slots · doctor_id FK → doctors · patient_id FK → patients (null = guest) · created_at
 
 notifications (M5, outbox)
 ─────────────
@@ -320,7 +380,7 @@ recipient · subject · body · status (pending | sent | failed) · attempts · 
 | GET | `/api/v1/doctors/{id}` | ✅ |
 | GET | `/api/v1/doctors/{id}/slots?days=&mode=` | ✅ |
 | POST | `/api/v1/triage` (message + structured facts → care path; no LLM) | ✅ |
-| POST | `/api/v1/chat` (`{session_id?, message, language?}` → reply, care path, provider cards, open times, trace) | ✅ |
+| POST | `/api/v1/chat` (`{session_id?, message, language?}` → reply, `agent` (reception / clinic assistant), clinic, care path, provider cards, offers, open times, trace) | ✅ |
 | POST | `/api/v1/bookings` (`{session_id, slot_id}` → DB ticket number; called by the patient's Confirm, never the model) | ✅ |
 | GET | `/api/v1/hospital/inbox?doctor_id=` (**demo only**: what the doctor/hospital received) | ✅ |
 
@@ -336,6 +396,8 @@ Interactive OpenAPI docs: `http://localhost:8000/docs`.
 - Secrets in environment variables; the AI key lives only in the backend, never in the frontend
 - CORS allow-list (never `*`)
 - The database is reachable only through the backend
+- Patient identity: file number / national ID **+ date of birth**, identical failure message, 3-attempt cap, identifiers dropped after the check ✅
+- Notifications carry the file number to the hospital (its own patient), never the medical history or today's symptoms ✅
 - Tool authorisation per care path ✅
 - Simple per-client rate limit on `/chat` (20/min, in memory) ✅
 - No patient accounts, and no conversation stored beyond the session; logs record event types and IDs, not symptom text ✅
@@ -378,13 +440,15 @@ One error shape everywhere: `{"error": {"code", "message", "request_id?"}}`. Sta
 - Evaluation harness: a fixed set of Arabic/English patient scenarios run against every prompt/model change, with the triage path asserted.
 - Observability: per-turn traces (facts extracted → path → tools → reply), and cost/latency per conversation.
 
-### Revenue layer: upsell & cross-sell (design only, not built)
+### Revenue layer: upsell & cross-sell (✅ minimal version built)
 
 HealTrip is a medical-travel business, so the decision flow is also where revenue happens. The rule: **selling must never touch the clinical decision.**
 
 - The care path is computed **before and independently of** any offer. The triage code has no access to prices or partners.
 - **No offers on emergency or urgent paths.** The offer step isn't even called.
-- Offers come from an `offers` table, like providers do, so the LLM can't invent a package or a price.
+- Offers come from an `offers` table, like providers do, so the LLM can't invent a package or a price. The model never even receives the offers; the UI renders them from DB rows.
+- They're shown only **after the patient confirms** the clinic assistant's summary.
+- Travel offers only appear when a matched doctor is abroad.
 - Paid placement never changes provider ranking.
 
 | Care path | Cross-sell (related service) | Upsell (better tier) |
@@ -408,6 +472,7 @@ Deliberately small: a demo that makes the engineering decisions visible, not a p
 | M3 | **AI agent + tools**: fact extraction, relevant questions, `search_providers` / `get_*_details`, grounding check, failure handling | ✅ code + 66 tests (scripted LLM); live-model run pending |
 | M4 | Chat UI (Arabic / English) | ⬜ |
 | M5 | Booking: real open times → patient confirms → DB ticket number | ✅ done, incl. mocked doctor/hospital notification (74 tests total) |
+| M5b | Reception workflow: patient file lookup (mock CRM), clinic-assistant handoff + confirmation, offers | ✅ done (87 tests) |
 | M6 | README examples (normal, emergency, provider search) + demo link | ⬜ |
 
 ---

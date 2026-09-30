@@ -105,7 +105,7 @@ class SlotUnavailable(Exception):
     pass
 
 
-def book_slot(session: Session, slot_id: int, now: datetime | None = None) -> Booking:
+def book_slot(session: Session, slot_id: int, now: datetime | None = None, patient_id: int | None = None) -> Booking:
     """Book atomically. Row lock + status check + UNIQUE(slot_id): two patients confirming the
     same slot at the same moment can't both succeed. Caller owns the transaction."""
     now = now or datetime.now(timezone.utc)
@@ -115,7 +115,7 @@ def book_slot(session: Session, slot_id: int, now: datetime | None = None) -> Bo
     ):
         raise SlotUnavailable()
     slot.status = "booked"
-    booking = Booking(slot_id=slot.id, doctor_id=slot.doctor_id)
+    booking = Booking(slot_id=slot.id, doctor_id=slot.doctor_id, patient_id=patient_id)
     session.add(booking)
     session.flush()
     session.refresh(booking)  # read back the DB-generated ticket number
