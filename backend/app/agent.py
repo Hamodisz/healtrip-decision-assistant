@@ -38,6 +38,8 @@ class ChatSession:
     history: list[dict] = field(default_factory=list)  # {"role", "content"} text only
     known_doctor_ids: set[str] = field(default_factory=set)
     emergency_locked: bool = False                     # once emergency, stays emergency
+    care_path: CarePath | None = None                  # last decided path: booking is only allowed on bookable paths
+    offered_slot_ids: set[int] = field(default_factory=set)   # patient can only confirm a slot we offered
 
 
 @dataclass
@@ -47,6 +49,7 @@ class TurnResult:
     triage: TriageResult | None
     providers: list[dict] = field(default_factory=list)
     hospitals: list[dict] = field(default_factory=list)
+    slots: list[dict] = field(default_factory=list)
     trace: list[dict] = field(default_factory=list)
     blocked: list[str] = field(default_factory=list)   # what the output checks removed (for transparency)
 
@@ -81,6 +84,16 @@ DB_DOWN = {"en": "I'm unable to access the provider database right now. Please t
            "ar": "لا أستطيع الوصول إلى قاعدة بيانات مقدمي الخدمة الآن. يُرجى المحاولة لاحقًا."}
 AI_DOWN = {"en": "The AI service is temporarily unavailable. Please try again. If you feel unwell now, call 997.",
            "ar": "خدمة الذكاء الاصطناعي غير متاحة مؤقتًا. يُرجى المحاولة مرة أخرى. إذا كنت تشعر بتوعك الآن، اتصل بالرقم 997."}
+
+
+SLOTS_TEXT = {"en": "Here are the next open times. Tap Confirm on the one you want, and I'll give you your ticket number.",
+              "ar": "هذه أقرب المواعيد المتاحة. اضغط «تأكيد» على الموعد الذي يناسبك وسأعطيك رقم التذكرة."}
+BOOKABLE = {CarePath.specialist, CarePath.second_opinion, CarePath.routine}
+
+
+def _claims_booked(text: str) -> bool:
+    """The model must never announce a booking: only the confirm endpoint books."""
+    return bool(re.search(r"\b(booked|confirmed|reserved|ticket)\b|(تم (ال)?حجز|تم تاكيد|رقم (ال)?تذكره)", red_flags.normalize(text)))
 
 
 def detect_language(message: str, hint: str | None) -> str:
@@ -227,7 +240,10 @@ def _recommend(db, llm, s, lang, result, trace) -> TurnResult:
         "Call search_providers to find matching doctors. If a location filter returns nothing, you may retry "
         "once without it. Then write at most 3 short sentences: state the next step and refer to doctors ONLY by "
         "the doctor_id values returned by the tools, written like [DOC-001]. Do not repeat details: the app shows "
-        "provider cards from the database. If the tools return no results, say so plainly."
+        "provider cards from the database. If the tools return no results, say so plainly.\n"
+        "If the patient wants to book or asks about times for a doctor, call get_available_slots and tell them to "
+        "tap Confirm on the time they want. Never list times yourself and never say an appointment is booked: "
+        "only the patient's confirmation books it."
     )
     msgs = [{"role": "system", "content": prompt}, *s.history[-HISTORY_WINDOW:]]
     text = ""
@@ -253,6 +269,11 @@ def _recommend(db, llm, s, lang, result, trace) -> TurnResult:
     # Deterministic outcomes first: the model's text never overrides these facts.
     if gw.db_failed:
         text = DB_DOWN[lang]
+    elif gw.slots:
+        text, blocked = no_diagnosis.enforce(text, lang)
+        if blocked or not text.strip() or not grounded(text, gw, s) or _claims_booked(text):
+            blocked = blocked or ["unsafe_booking_text"]
+            text = SLOTS_TEXT[lang]
     elif not gw.doctors:
         text = PATH_TEXT[result.care_path][lang] + " " + NO_RESULTS[lang]
     else:
@@ -263,12 +284,15 @@ def _recommend(db, llm, s, lang, result, trace) -> TurnResult:
             blocked = ["ungrounded_provider_reference"]
             text = fallback
     s.known_doctor_ids |= set(gw.doctors)
+    s.offered_slot_ids |= set(gw.slots)
     trace.append({"step": "recommend", "providers": list(gw.doctors), "blocked": blocked})
     return TurnResult(reply=text, language=lang, triage=result, providers=list(gw.doctors.values()),
-                      hospitals=list(gw.hospitals.values()), trace=trace, blocked=blocked)
+                      hospitals=list(gw.hospitals.values()), slots=list(gw.slots.values()), trace=trace, blocked=blocked)
 
 
 def _finish(s: ChatSession, r: TurnResult) -> TurnResult:
+    if r.triage and r.triage.care_path is not CarePath.need_more_info:
+        s.care_path = r.triage.care_path
     s.history.append({"role": "assistant", "content": r.reply})
     # Log the decision path, never the patient's words.
     log.info("turn session=%s path=%s rule=%s providers=%s blocked=%s", s.id[:8],

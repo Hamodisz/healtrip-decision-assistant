@@ -9,7 +9,7 @@ from datetime import datetime, timedelta, timezone
 from sqlalchemy import and_, or_, select
 from sqlalchemy.orm import Session, joinedload
 
-from app.models import Doctor, Hospital, Slot, Specialty
+from app.models import Booking, Doctor, Hospital, Slot, Specialty
 
 MAX_RESULTS = 20  # hard cap: protects the DB and keeps tool results small enough for the model
 
@@ -99,3 +99,24 @@ def available_slots(
     if mode:
         stmt = stmt.where(Slot.mode == mode)
     return list(session.scalars(stmt.order_by(Slot.starts_at).limit(min(limit, MAX_RESULTS))))
+
+
+class SlotUnavailable(Exception):
+    pass
+
+
+def book_slot(session: Session, slot_id: int, now: datetime | None = None) -> Booking:
+    """Book atomically. Row lock + status check + UNIQUE(slot_id): two patients confirming the
+    same slot at the same moment can't both succeed. Caller owns the transaction."""
+    now = now or datetime.now(timezone.utc)
+    slot = session.scalars(select(Slot).where(Slot.id == slot_id).with_for_update()).one_or_none()
+    if slot is None or slot.starts_at <= now or slot.status == "booked" or (
+        slot.status == "held" and slot.held_until and slot.held_until > now
+    ):
+        raise SlotUnavailable()
+    slot.status = "booked"
+    booking = Booking(slot_id=slot.id, doctor_id=slot.doctor_id)
+    session.add(booking)
+    session.flush()
+    session.refresh(booking)  # read back the DB-generated ticket number
+    return booking

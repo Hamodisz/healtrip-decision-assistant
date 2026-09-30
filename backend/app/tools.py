@@ -7,6 +7,8 @@ checked against them (grounding).
 """
 import json
 from dataclasses import dataclass, field
+from typing import Literal
+from zoneinfo import ZoneInfo
 
 from pydantic import BaseModel, Field, ValidationError
 from sqlalchemy.exc import SQLAlchemyError
@@ -34,6 +36,15 @@ TOOL_SCHEMAS = [
                        "required": ["doctor_id"]},
     }},
     {"type": "function", "function": {
+        "name": "get_available_slots",
+        "description": "Open appointment times for a doctor previously returned by search_providers. "
+                       "Call this when the patient wants to book or asks about times.",
+        "parameters": {"type": "object", "properties": {
+            "doctor_id": {"type": "string"},
+            "mode": {"type": "string", "enum": ["in_person", "remote"]},
+        }, "required": ["doctor_id"]},
+    }},
+    {"type": "function", "function": {
         "name": "get_hospital_details",
         "description": "Full details for a hospital of a doctor previously returned.",
         "parameters": {"type": "object", "properties": {"hospital_id": {"type": "string"}},
@@ -55,6 +66,11 @@ class DoctorArgs(BaseModel):
     doctor_id: str = Field(pattern=r"^DOC-\d{3}$")
 
 
+class SlotArgs(BaseModel):
+    doctor_id: str = Field(pattern=r"^DOC-\d{3}$")
+    mode: Literal["in_person", "remote"] | None = None
+
+
 class HospitalArgs(BaseModel):
     hospital_id: str = Field(pattern=r"^HOSP-\d{3}$")
 
@@ -72,6 +88,13 @@ def doctor_card(d) -> dict:
     }
 
 
+def slot_card(slot, doctor) -> dict:
+    local = slot.starts_at.astimezone(ZoneInfo(doctor.hospital.timezone))
+    return {"slot_id": slot.id, "doctor_id": doctor.id, "starts_at": slot.starts_at.isoformat(),
+            "local_time": local.strftime("%a %d %b %Y, %H:%M"), "timezone": doctor.hospital.timezone,
+            "mode": slot.mode, "duration_min": slot.duration_min}
+
+
 def hospital_card(h) -> dict:
     return {"hospital_id": h.id, "hospital_name": h.name_en, "hospital_name_ar": h.name_ar,
             "city": h.city, "country": h.country, "address": h.address,
@@ -85,6 +108,7 @@ class ToolGateway:
     known_doctor_ids: set[str]                       # returned earlier in this conversation
     doctors: dict[str, dict] = field(default_factory=dict)   # returned THIS turn (for grounding + UI)
     hospitals: dict[str, dict] = field(default_factory=dict)
+    slots: dict[int, dict] = field(default_factory=dict)
     trace: list[dict] = field(default_factory=list)
     db_failed: bool = False
     searched_empty: bool = False
@@ -131,6 +155,17 @@ class ToolGateway:
             self.doctors[d.id] = card
             return card
 
+        if name == "get_available_slots":
+            a = SlotArgs(**args)
+            if a.doctor_id not in self.known_doctor_ids | set(self.doctors):
+                return {"error": "not_allowed", "reason": "doctor_id was not returned by a search in this conversation"}
+            d = repo.get_doctor(self.session, a.doctor_id)
+            if a.doctor_id not in self.doctors:
+                self.doctors[d.id] = doctor_card(d)  # keep the card visible next to its times
+            cards = [slot_card(s, d) for s in repo.available_slots(self.session, a.doctor_id, days=14, mode=a.mode, limit=5)]
+            self.slots.update({c["slot_id"]: c for c in cards})
+            return {"results": cards} if cards else {"results": [], "note": "no_open_slots_in_next_14_days"}
+
         if name == "get_hospital_details":
             a = HospitalArgs(**args)
             allowed = {c["hospital_id"] for c in self.doctors.values()}
@@ -148,7 +183,8 @@ class ToolGateway:
 
 def _summary(result: dict) -> str:
     if "results" in result:
-        return f"{len(result['results'])} result(s): " + ", ".join(r["doctor_id"] for r in result["results"])
+        ids = [str(r.get("slot_id") or r["doctor_id"]) for r in result["results"]]
+        return f"{len(ids)} result(s): " + ", ".join(ids)
     if "error" in result:
         return "error: " + result["error"]
     return "ok: " + str(result.get("doctor_id") or result.get("hospital_id"))

@@ -98,6 +98,9 @@ def reset_schema() -> None:
     with engine.begin() as conn:
         conn.execute(text("CREATE EXTENSION IF NOT EXISTS vector"))  # for RAG (M7)
     Base.metadata.drop_all(engine)
+    with engine.begin() as conn:
+        conn.execute(text("DROP SEQUENCE IF EXISTS ticket_seq"))
+        conn.execute(text("CREATE SEQUENCE ticket_seq"))
     Base.metadata.create_all(engine)
 
 

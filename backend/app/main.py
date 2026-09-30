@@ -39,7 +39,7 @@ def _error(status: int, code: str, message: str, request_id: str | None = None) 
 
 @app.exception_handler(HTTPException)
 async def http_error(_: Request, exc: HTTPException):
-    code = {404: "not_found", 429: "rate_limited", 503: "unavailable"}.get(exc.status_code, "http_error")
+    code = {404: "not_found", 409: "conflict", 429: "rate_limited", 503: "unavailable"}.get(exc.status_code, "http_error")
     return _error(exc.status_code, code, str(exc.detail))
 
 
