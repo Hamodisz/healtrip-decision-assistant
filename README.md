@@ -110,7 +110,7 @@ Tool inputs are validated with Pydantic **before** any query; invalid parameters
 
 ---
 
-## 5. Safety _(planned: M2)_
+## 5. Safety (✅ M2)
 
 Two layers, both code:
 
@@ -124,6 +124,29 @@ Two layers, both code:
 On emergency, the flow **stops provider discovery**. The reply is a fixed, reviewed message (not LLM-generated), e.g.:
 
 > "Based on what you've described, this may need urgent medical attention. Please seek emergency care now (in Saudi Arabia call **997**, the Red Crescent ambulance, or **911** where the unified number operates) rather than waiting for a specialist appointment. This assistant cannot diagnose your condition."
+
+The full rule set, in order (code: `backend/app/triage.py`, `backend/app/red_flags.py`):
+
+| Rule | If | Then |
+|---|---|---|
+| `RF_*` | Raw message contains a red-flag phrase (can't breathe, fainted, crushing/severe chest pain, stroke signs; AR + EN) | **emergency**, and the AI is never called |
+| `E_PAIN_NOW` | Chest pain happening now | **emergency** |
+| `E_ASSOCIATED` | Chest pain + shortness of breath / fainting / sweating or nausea / pain spreading | **emergency** |
+| `Q_PAIN_NOW` → `Q_ASSOCIATED` → `Q_ONSET` → `Q_REVIEW` | That fact is still unknown | ask it next (only questions that can still change the path) |
+| `U_RECENT` | Started today, gone now, no symptoms | **urgent**: same-day ER visit, not a booking |
+| `S_REVIEW` | Older pain, no symptoms, existing diagnosis to review | **second opinion** (cardiology) |
+| `S_CARDIOLOGY` | Older pain, no symptoms | **specialist** (cardiology) |
+| `R_OTHER` | Not chest pain, no red flag | **routine** (family medicine) |
+
+Emergency checks run first, so a "yes" to any warning sign ends the questions immediately, and a second-opinion request can never override an emergency. Questions such as age aren't asked, because in these rules they wouldn't change the path.
+
+`POST /api/v1/triage` exposes the same function directly, with no LLM, so the rules can be tested in isolation:
+
+```bash
+curl -X POST localhost:8000/api/v1/triage -H 'Content-Type: application/json' \
+  -d '{"message":"عندي ألم في صدري وما أقدر أتنفس","language":"ar"}'
+# → care_path: emergency, rule: RF_BREATHING, fixed Arabic emergency message with 997
+```
 
 Rules are conservative (they over-triage rather than under-triage), listed in one file, unit-tested in both languages, and **documented as prototype rules, not clinical guidance**. A real deployment needs clinician-authored and clinically validated rules.
 
@@ -184,7 +207,7 @@ UNIQUE (doctor_id, starts_at) · CHECK status/mode · INDEX (doctor_id, status, 
 | GET | `/api/v1/doctors?specialty=&country=&city=&language=&second_opinion=&remote_consult=` | ✅ |
 | GET | `/api/v1/doctors/{id}` | ✅ |
 | GET | `/api/v1/doctors/{id}/slots?days=&mode=` | ✅ |
-| POST | `/api/v1/triage` (structured facts → care path; no LLM) | planned (M2) |
+| POST | `/api/v1/triage` (message + structured facts → care path; no LLM) | ✅ |
 | POST | `/api/v1/chat` (conversation turn) | planned (M3) |
 
 Interactive OpenAPI docs: `http://localhost:8000/docs`.
@@ -218,7 +241,7 @@ One error shape everywhere: `{"error": {"code", "message", "request_id?"}}`. Sta
 | DB unavailable | `503 database_unavailable`; the chat says it can't reach the provider database, and fabricates nothing ✅ (API) / M3 (chat) |
 | AI provider down / timeout | one retry, then *"The AI service is temporarily unavailable."* The red-flag pre-check still runs _(M3)_ |
 | No matching provider | explicit "no matching provider in the current database" _(M3)_ |
-| Emergency | provider discovery stops; fixed emergency message _(M2)_ |
+| Emergency | provider discovery stops; fixed emergency message ✅ |
 
 ---
 
@@ -266,9 +289,9 @@ Deliberately small: a demo that makes the engineering decisions visible, not a p
 
 | # | Milestone | Status |
 |---|---|---|
-| M1 | Data foundation: PostgreSQL schema, mock network, provider API | ✅ done (12 tests) |
-| M2 | **Safety / triage layer**: red-flag pre-check + care-path rules (AR/EN), unit-tested | ⏳ next |
-| M3 | **AI agent + tools**: fact extraction, relevant questions, `search_providers` / `get_*_details`, grounding check, failure handling | ⬜ |
+| M1 | Data foundation: PostgreSQL schema, mock network, provider API | ✅ done |
+| M2 | **Safety / triage layer**: red-flag pre-check + care-path rules (AR/EN), unit-tested | ✅ done (43 tests total) |
+| M3 | **AI agent + tools**: fact extraction, relevant questions, `search_providers` / `get_*_details`, grounding check, failure handling | ⏳ next |
 | M4 | Chat UI (Arabic / English) | ⬜ |
 | M5 | Simple booking: patient confirms → ticket number from the DB | ⬜ |
 | M6 | README examples (normal, emergency, provider search) + demo link | ⬜ |

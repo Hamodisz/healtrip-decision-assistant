@@ -8,7 +8,7 @@ from fastapi.responses import JSONResponse
 from sqlalchemy import text
 from sqlalchemy.exc import SQLAlchemyError
 
-from app.api import providers
+from app.api import providers, triage
 from app.config import get_settings
 from app.db import engine
 
@@ -70,3 +70,4 @@ def health():
 
 
 app.include_router(providers.router)
+app.include_router(triage.router)
