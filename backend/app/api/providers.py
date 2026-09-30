@@ -16,6 +16,7 @@ CountryQ = Annotated[str | None, Query(pattern=r"^[A-Za-z]{2}$", description="IS
 CityQ = Annotated[str | None, Query(min_length=2, max_length=60)]
 LangQ = Annotated[str | None, Query(pattern=r"^[a-z]{2}$", description="ar | en | ...")]
 DoctorId = Annotated[str, Path(pattern=r"^DOC-\d{3}$")]
+HospitalId = Annotated[str, Path(pattern=r"^HOSP-\d{3}$")]
 
 
 @router.get("/specialties", response_model=list[SpecialtyOut])
@@ -31,6 +32,14 @@ def hospitals(
     has_emergency: bool | None = None,
 ):
     return repo.search_hospitals(db, country=country, city=city, has_emergency=has_emergency)
+
+
+@router.get("/hospitals/{hospital_id}", response_model=HospitalOut)
+def hospital(hospital_id: HospitalId, db: DB):
+    found = repo.get_hospital(db, hospital_id)
+    if not found:
+        raise HTTPException(status_code=404, detail=f"Hospital {hospital_id} not found")
+    return found
 
 
 @router.get("/doctors", response_model=list[DoctorOut])

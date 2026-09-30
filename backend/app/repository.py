@@ -66,6 +66,10 @@ def search_doctors(
     return list(session.scalars(stmt).unique())
 
 
+def get_hospital(session: Session, hospital_id: str) -> Hospital | None:
+    return session.get(Hospital, hospital_id)
+
+
 def get_doctor(session: Session, doctor_id: str) -> Doctor | None:
     stmt = (
         select(Doctor)

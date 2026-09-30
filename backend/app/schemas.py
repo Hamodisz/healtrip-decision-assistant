@@ -10,6 +10,7 @@ class SpecialtyOut(BaseModel):
     code: str
     name_en: str
     name_ar: str
+    description: str
 
 
 class HospitalOut(BaseModel):
@@ -19,6 +20,7 @@ class HospitalOut(BaseModel):
     name_ar: str
     country: str
     city: str
+    address: str
     timezone: str
     has_emergency: bool
     accreditation: str | None

@@ -73,3 +73,9 @@ def test_expired_hold_becomes_available_again_but_active_hold_does_not():
 def test_result_cap():
     with SessionLocal() as s:
         assert len(repo.search_doctors(s, limit=500)) <= repo.MAX_RESULTS
+
+
+def test_hospital_details(client):
+    h = client.get("/api/v1/hospitals/HOSP-005").json()
+    assert h["city"] == "Istanbul" and h["address"] and h["is_mock"]
+    assert client.get("/api/v1/hospitals/HOSP-999").status_code == 404

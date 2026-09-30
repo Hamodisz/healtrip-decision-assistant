@@ -20,25 +20,34 @@ from app.db import Base, SessionLocal, engine
 from app.models import Doctor, Hospital, Slot, Specialty
 
 SPECIALTIES = [
-    ("cardiology", "Cardiology", "أمراض القلب"),
-    ("cardiac_surgery", "Cardiac Surgery", "جراحة القلب"),
-    ("emergency_medicine", "Emergency Medicine", "طب الطوارئ"),
-    ("internal_medicine", "Internal Medicine", "الطب الباطني"),
-    ("family_medicine", "Family Medicine", "طب الأسرة"),
-    ("pulmonology", "Pulmonology", "أمراض الصدر"),
-    ("gastroenterology", "Gastroenterology", "الجهاز الهضمي"),
-    ("orthopedics", "Orthopedics", "العظام"),
-    ("neurology", "Neurology", "الأعصاب"),
+    ("cardiology", "Cardiology", "أمراض القلب",
+     "Heart and blood-vessel conditions: chest pain evaluation, rhythm problems, heart failure."),
+    ("cardiac_surgery", "Cardiac Surgery", "جراحة القلب",
+     "Surgical treatment of the heart: bypass, valve repair/replacement."),
+    ("emergency_medicine", "Emergency Medicine", "طب الطوارئ",
+     "Immediate care for acute, possibly life-threatening conditions. Walk-in, not booked."),
+    ("internal_medicine", "Internal Medicine", "الطب الباطني",
+     "Adult general medicine: diagnosis of multi-system and unclear symptoms."),
+    ("family_medicine", "Family Medicine", "طب الأسرة",
+     "First point of contact for routine care, screening and referrals."),
+    ("pulmonology", "Pulmonology", "أمراض الصدر",
+     "Lungs and breathing: asthma, COPD, breathlessness."),
+    ("gastroenterology", "Gastroenterology", "الجهاز الهضمي",
+     "Digestive system: reflux, stomach, bowel and liver conditions."),
+    ("orthopedics", "Orthopedics", "العظام",
+     "Bones, joints and muscles, including musculoskeletal chest-wall pain."),
+    ("neurology", "Neurology", "الأعصاب",
+     "Brain, nerves and spine: headaches, numbness, seizures."),
 ]
 
-# id, name_en, name_ar, country, city, tz, has_er, accreditation, languages
+# id, name_en, name_ar, country, city, address, tz, has_er, accreditation, languages
 HOSPITALS = [
-    ("HOSP-001", "Demo Riyadh Heart Institute", "معهد الرياض للقلب (تجريبي)", "SA", "Riyadh", "Asia/Riyadh", True, "JCI", ["ar", "en"]),
-    ("HOSP-002", "Demo Riyadh General Hospital", "مستشفى الرياض العام (تجريبي)", "SA", "Riyadh", "Asia/Riyadh", True, "CBAHI", ["ar", "en"]),
-    ("HOSP-003", "Demo Jeddah Coastal Medical Center", "مركز جدة الساحلي الطبي (تجريبي)", "SA", "Jeddah", "Asia/Riyadh", True, "JCI", ["ar", "en"]),
-    ("HOSP-004", "Demo Dubai Specialty Clinic", "عيادة دبي التخصصية (تجريبي)", "AE", "Dubai", "Asia/Dubai", False, "JCI", ["ar", "en"]),
-    ("HOSP-005", "Demo Istanbul University Hospital", "مستشفى إسطنبول الجامعي (تجريبي)", "TR", "Istanbul", "Europe/Istanbul", True, "JCI", ["tr", "en", "ar"]),
-    ("HOSP-006", "Demo Berlin Second-Opinion Center", "مركز برلين للرأي الثاني (تجريبي)", "DE", "Berlin", "Europe/Berlin", False, None, ["de", "en", "ar"]),
+    ("HOSP-001", "Demo Riyadh Heart Institute", "معهد الرياض للقلب (تجريبي)", "SA", "Riyadh", "12 Demo King Fahd Rd, Riyadh", "Asia/Riyadh", True, "JCI", ["ar", "en"]),
+    ("HOSP-002", "Demo Riyadh General Hospital", "مستشفى الرياض العام (تجريبي)", "SA", "Riyadh", "45 Demo Olaya St, Riyadh", "Asia/Riyadh", True, "CBAHI", ["ar", "en"]),
+    ("HOSP-003", "Demo Jeddah Coastal Medical Center", "مركز جدة الساحلي الطبي (تجريبي)", "SA", "Jeddah", "8 Demo Corniche Rd, Jeddah", "Asia/Riyadh", True, "JCI", ["ar", "en"]),
+    ("HOSP-004", "Demo Dubai Specialty Clinic", "عيادة دبي التخصصية (تجريبي)", "AE", "Dubai", "Demo Healthcare City, Bldg 3, Dubai", "Asia/Dubai", False, "JCI", ["ar", "en"]),
+    ("HOSP-005", "Demo Istanbul University Hospital", "مستشفى إسطنبول الجامعي (تجريبي)", "TR", "Istanbul", "101 Demo Bagdat Ave, Istanbul", "Europe/Istanbul", True, "JCI", ["tr", "en", "ar"]),
+    ("HOSP-006", "Demo Berlin Second-Opinion Center", "مركز برلين للرأي الثاني (تجريبي)", "DE", "Berlin", "7 Demo Charite Str, Berlin", "Europe/Berlin", False, None, ["de", "en", "ar"]),
 ]
 
 # id, name_en, name_ar, specialty, hospital, languages, years, second_opinion, remote, fee, currency
@@ -73,7 +82,7 @@ def build_slots(doctors: list[tuple], hospitals: dict[str, tuple], start: date) 
         doc_id, specialty, hosp_id, remote = d[0], d[3], d[4], d[8]
         if specialty == "emergency_medicine":
             continue  # ER is walk-in: no appointments
-        country, tz = hospitals[hosp_id][3], ZoneInfo(hospitals[hosp_id][5])
+        country, tz = hospitals[hosp_id][3], ZoneInfo(hospitals[hosp_id][6])
         for offset in range(1, SLOT_DAYS + 1):
             day = start + timedelta(days=offset)
             if day.weekday() in WEEKEND[country]:
@@ -96,10 +105,10 @@ def seed(start: date | None = None) -> dict[str, int]:
     start = start or date.today()
     hospitals = {h[0]: h for h in HOSPITALS}
     with SessionLocal.begin() as s:
-        s.add_all(Specialty(code=c, name_en=en, name_ar=ar) for c, en, ar in SPECIALTIES)
+        s.add_all(Specialty(code=c, name_en=en, name_ar=ar, description=d) for c, en, ar, d in SPECIALTIES)
         s.add_all(
-            Hospital(id=h[0], name_en=h[1], name_ar=h[2], country=h[3], city=h[4], timezone=h[5],
-                     has_emergency=h[6], accreditation=h[7], languages=h[8])
+            Hospital(id=h[0], name_en=h[1], name_ar=h[2], country=h[3], city=h[4], address=h[5],
+                     timezone=h[6], has_emergency=h[7], accreditation=h[8], languages=h[9])
             for h in HOSPITALS
         )
         s.flush()

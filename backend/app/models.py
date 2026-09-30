@@ -29,6 +29,7 @@ class Specialty(Base):
     code: Mapped[str] = mapped_column(String(40), primary_key=True)  # e.g. "cardiology"
     name_en: Mapped[str] = mapped_column(String(80))
     name_ar: Mapped[str] = mapped_column(String(80))
+    description: Mapped[str] = mapped_column(String(200))
 
 
 class Hospital(Base):
@@ -39,6 +40,7 @@ class Hospital(Base):
     name_ar: Mapped[str] = mapped_column(String(120))
     country: Mapped[str] = mapped_column(String(2), index=True)  # ISO 3166-1 alpha-2
     city: Mapped[str] = mapped_column(String(60), index=True)
+    address: Mapped[str] = mapped_column(String(200))
     timezone: Mapped[str] = mapped_column(String(40))  # IANA, slots are generated in local time
     has_emergency: Mapped[bool] = mapped_column(Boolean, index=True)
     accreditation: Mapped[str | None] = mapped_column(String(40))
