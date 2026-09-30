@@ -88,9 +88,9 @@ renders only backend data                 ① red-flag check (code)             
 ## Security & error handling (short)
 
 - Validation at every boundary; bound SQL parameters only; secrets in env vars; the AI key never reaches the browser; CORS allow-list.
-- Identity: file number + date of birth, identical failure message, 3-attempt cap, identifiers dropped after the check.
-- No patient history or symptoms in notifications or logs; conversations expire after 30 minutes; daily usage cap on the public demo.
-- AI down → clear message (the red-flag check still works) · DB down → "can't access the provider database" (nothing fabricated) · no match → said plainly · emergency → provider search stops.
+- Identity: file number + date of birth, identical failure message, 3-attempt cap. File/ID numbers are pulled out **in code** and never sent to the LLM or kept in the chat history; the date-of-birth answer is erased after the check.
+- No patient history or symptoms in notifications or logs; conversation text is kept in the DB for at most 30 minutes; daily usage cap on the public demo.
+- AI down → clear message · DB down → "can't access the provider database" (nothing fabricated) · no match → said plainly · **emergency → the fixed emergency message is returned even if the AI, the database or the daily cap fails.**
 - Production still needs: auth + consent, encryption at rest, audit logs, PDPL/NCA review, an **SFDA** assessment (clinical decision software can be a medical device), and clinician-validated rules. **Details: [docs/SAFETY.md](docs/SAFETY.md).**
 
 ## Assumptions

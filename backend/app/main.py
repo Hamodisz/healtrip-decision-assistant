@@ -45,6 +45,8 @@ async def http_error(_: Request, exc: HTTPException):
 
 @app.exception_handler(RequestValidationError)
 async def validation_error(_: Request, exc: RequestValidationError):
+    if any(e.get("type") == "json_invalid" for e in exc.errors()):
+        return _error(422, "invalid_input", "Request body must be valid JSON.")
     fields = ", ".join(".".join(str(p) for p in e["loc"][1:]) for e in exc.errors())
     return _error(422, "invalid_input", f"Invalid value for: {fields}")
 

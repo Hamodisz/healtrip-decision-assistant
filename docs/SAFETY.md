@@ -100,11 +100,12 @@ Why the LLM isn't trusted here: it isn't that LLMs are always worse at triage. P
 - Secrets in environment variables; the AI key lives only in the backend, never in the frontend
 - CORS allow-list (never `*`)
 - The database is reachable only through the backend
-- Patient identity: file number / national ID **+ date of birth**, identical failure message, 3-attempt cap, identifiers dropped after the check ✅
+- Patient identity: file number / national ID **+ date of birth**, identical failure message, 3-attempt cap; file/ID numbers extracted in code and never sent to the LLM or stored in chat history; the date-of-birth answer is erased after the check ✅
 - Notifications carry the file number to the hospital (its own patient), never the medical history or today's symptoms ✅
 - Tool authorisation per care path ✅
 - Simple per-client rate limit on `/chat` (20/min, in memory) ✅
-- No patient accounts, and no conversation stored beyond the session; logs record event types and IDs, not symptom text ✅
+- No patient accounts; conversation text is kept in the DB for at most 30 minutes (serverless needs shared state); logs record event types and IDs, not symptom text ✅
+- The red-flag emergency reply is returned even when the database is down or the daily cap is reached ✅ (audit finding, now tested)
 
 **Required before production (not done here):** authentication and consent, encryption at rest, audit logging, data-residency review (Saudi PDPL / NCA controls), an **SFDA regulatory assessment** (software that guides clinical decisions may count as a medical device under [SFDA MDS-G010](https://www.sfda.gov.sa/en/guide/guidance-artificial-intelligence-and-machine-learning-aiml-enabled-medical-devices-mds-%E2%80%93-g010)), clinician-validated triage rules and clinical governance, BAAs/DPAs with the LLM provider, penetration testing, and monitoring. **This prototype claims no regulatory compliance.**
 

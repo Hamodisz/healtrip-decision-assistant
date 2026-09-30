@@ -117,8 +117,7 @@ def test_booking_notifies_doctor_and_hospital_without_symptoms(client):
     body = _chat(client, s, "times?", FakeLLM(facts(), tool("get_available_slots", doctor_id="DOC-001"), text("Tap Confirm.")))
     b = client.post("/api/v1/bookings", json={"session_id": s.id, "slot_id": body["slots"][1]["slot_id"]}).json()
 
-    inbox = [n for n in client.get("/api/v1/hospital/inbox", params={"doctor_id": "DOC-001"}).json()
-             if n["ticket_number"] == b["ticket_number"]]
+    inbox = [n for n in client.get("/api/v1/hospital/inbox", params={"ticket": b["ticket_number"]}).json()]
     assert {n["channel"] for n in inbox} == {"doctor_email", "hospital_system"}
     assert all(n["status"] == "sent" for n in inbox)
     assert all("chest" not in n["body"].lower() for n in inbox)  # no symptoms leave the conversation
@@ -154,7 +153,7 @@ def test_verified_patient_booking_links_the_file_for_the_hospital(client):
     _chat(client, s, "Riyadh", FakeLLM(facts(city="Riyadh"), tool("search_providers", city="Riyadh"), text("[DOC-001]")))
     body = _chat(client, s, "times?", FakeLLM(facts(), tool("get_available_slots", doctor_id="DOC-001"), text("Tap Confirm.")))
     b = client.post("/api/v1/bookings", json={"session_id": s.id, "slot_id": body["slots"][3]["slot_id"]}).json()
-    inbox = [n for n in client.get("/api/v1/hospital/inbox").json() if n["ticket_number"] == b["ticket_number"]]
+    inbox = client.get("/api/v1/hospital/inbox", params={"ticket": b["ticket_number"]}).json()
     his = next(n for n in inbox if n["channel"] == "hospital_system")
     assert "Patient/MRN-100003" in his["body"]
     assert "Mitral" not in str(inbox)  # the file is linked, the medical history is not sent
@@ -177,3 +176,22 @@ def test_daily_cap_stops_the_public_demo(client, monkeypatch):
     monkeypatch.setattr(chat_api, "get_settings", lambda: type("S", (), {"daily_turn_cap": 0, "rate_limit_per_minute": 99})())
     r = client.post("/api/v1/chat", json={"message": "hello"})
     assert r.status_code == 503 and "daily usage limit" in r.json()["error"]["message"]
+
+
+def test_emergency_message_survives_database_outage(client, monkeypatch):
+    # Audit finding: the endpoint touched the DB (usage counter, session load) BEFORE the red-flag
+    # check, so a DB outage turned "I can't breathe" into "data service unavailable".
+    from sqlalchemy.exc import OperationalError
+    def db_down(*a, **k):
+        raise OperationalError("select", {}, Exception("db down"))
+    monkeypatch.setattr(session_store, "count_turn", db_down)
+    monkeypatch.setattr(session_store, "load", db_down)
+    r = client.post("/api/v1/chat", json={"message": "I have chest pain and I can't breathe"})
+    assert r.status_code == 200 and "997" in r.json()["reply"]
+    assert r.json()["triage"]["care_path"] == "emergency"
+
+
+def test_emergency_message_is_never_blocked_by_the_daily_cap(client, monkeypatch):
+    monkeypatch.setattr(chat_api, "get_settings", lambda: type("S", (), {"daily_turn_cap": 0, "rate_limit_per_minute": 99})())
+    r = client.post("/api/v1/chat", json={"message": "عندي ألم في صدري وما أقدر أتنفس"})
+    assert r.status_code == 200 and "997" in r.json()["reply"]

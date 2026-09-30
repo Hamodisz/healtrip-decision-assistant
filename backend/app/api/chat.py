@@ -6,13 +6,15 @@ from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session
 
-from app import notifications, repository as repo, session_store
-from app.agent import BOOKABLE, ChatSession, run_turn
+from sqlalchemy.exc import SQLAlchemyError
+
+from app import notifications, red_flags, repository as repo, session_store
+from app.agent import BOOKABLE, ChatSession, detect_language, run_turn
 from app.tools import doctor_card, slot_card
 from app.config import get_settings
 from app.db import get_session
 from app.llm import LLM, OpenAICompatLLM
-from app.triage import TriageResult
+from app.triage import EMERGENCY_MESSAGE, CarePath, TriageResult
 
 router = APIRouter(prefix="/api/v1", tags=["chat"])
 
@@ -58,10 +60,23 @@ class ChatResponse(BaseModel):
 
 @router.post("/chat", response_model=ChatResponse, dependencies=[Depends(rate_limit)])
 def chat(req: ChatRequest, db: Annotated[Session, Depends(get_session)], llm: Annotated[LLM, Depends(get_llm)]):
-    if session_store.count_turn(db) > get_settings().daily_turn_cap:
-        raise HTTPException(status_code=503, detail="The demo has reached its daily usage limit. Please try again tomorrow.")
-    s = session_store.load(db, req.session_id) or ChatSession()
-    r = run_turn(db, llm, s, req.message.strip(), req.language)
+    message = req.message.strip()
+    # Safety before infrastructure: a red flag gets the emergency message even if the DB is down
+    # or the daily cap is reached. (Audit finding: both used to replace it with an error.)
+    hits = red_flags.check(message)
+    try:
+        if not hits and session_store.count_turn(db) > get_settings().daily_turn_cap:
+            raise HTTPException(status_code=503, detail="The demo has reached its daily usage limit. Please try again tomorrow.")
+        s = session_store.load(db, req.session_id) or ChatSession()
+    except SQLAlchemyError:
+        if not hits:
+            raise
+        lang = detect_language(message, req.language)
+        return ChatResponse(session_id=req.session_id or ChatSession().id, reply=EMERGENCY_MESSAGE[lang], language=lang,
+                            triage=TriageResult(care_path=CarePath.emergency, rule_id=hits[0].id, reason="Emergency red flag"),
+                            providers=[], hospitals=[], slots=[], offers=[], agent="reception", clinic=None,
+                            patient_name=None, trace=[{"step": "red_flag_precheck", "result": [h.id for h in hits], "database": "unavailable"}])
+    r = run_turn(db, llm, s, message, req.language)
     session_store.save(db, s)
     return ChatResponse(session_id=s.id, reply=r.reply, language=r.language, triage=r.triage,
                         providers=r.providers, hospitals=r.hospitals, slots=r.slots, offers=r.offers,

@@ -166,7 +166,7 @@ A booking is linked to the patient's file **only if reception verified their ide
 A booking isn't finished until the doctor and the hospital know about it. The demo builds the real pattern with a **mock sender** (nothing leaves the machine):
 
 - In the **same transaction** as the booking, two outbox rows are written: a **doctor email** and a **hospital-system message** shaped as a FHIR `Appointment`.
-- After commit, a mock sender marks them `sent` and logs them. `GET /api/v1/hospital/inbox?doctor_id=DOC-001` shows exactly what the doctor and the hospital received.
+- After commit, a mock sender marks them `sent` and logs them. `GET /api/v1/hospital/inbox?ticket=HT-2026-000001` shows what the doctor and the hospital received for that one ticket (you must know the ticket number).
 - **Privacy:** notifications contain the time, place and ticket, never the patient's symptoms.
 - Tested: a booking that rolls back produces **no** notifications, and its slot stays open.
 
@@ -266,7 +266,7 @@ recipient · subject · body · status (pending | sent | failed) · attempts · 
 | POST | `/api/v1/triage` (message + structured facts → care path; no LLM) | ✅ |
 | POST | `/api/v1/chat` (`{session_id?, message, language?}` → reply, `agent` (reception / clinic assistant), clinic, care path, provider cards, offers, open times, trace) | ✅ |
 | POST | `/api/v1/bookings` (`{session_id, slot_id}` → DB ticket number; called by the patient's Confirm, never the model) | ✅ |
-| GET | `/api/v1/hospital/inbox?doctor_id=` (**demo only**: what the doctor/hospital received) | ✅ |
+| GET | `/api/v1/hospital/inbox?ticket=` (**demo only**: what the doctor/hospital received for one ticket) | ✅ |
 
 Interactive OpenAPI docs: `http://localhost:8000/docs`.
 

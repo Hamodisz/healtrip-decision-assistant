@@ -133,6 +133,21 @@ def _claims_booked(text: str) -> bool:
     return bool(re.search(r"\b(booked|confirmed|reserved|ticket)\b|(تم (ال)?حجز|تم تاكيد|رقم (ال)?تذكره)", red_flags.normalize(text)))
 
 
+_FILE_NO = re.compile(r"\bMRN-\d{6}\b", re.I)
+_NATIONAL_ID = re.compile(r"\b[12]\d{9}\b")
+
+
+def take_identifiers(s: "ChatSession", message: str) -> str:
+    """Pull file number / national ID out of the message in CODE, and return the message with them
+    removed. The LLM and the stored chat history never see identity numbers.
+    (Audit finding: they used to stay in history, which is sent to the LLM and kept for 30 minutes.)"""
+    if m := _FILE_NO.search(message):
+        s.reception["file_number"], s.reception["has_file"] = m.group(0).upper(), True
+    if m := _NATIONAL_ID.search(message):
+        s.reception["national_id"], s.reception["has_file"] = m.group(0), True
+    return _NATIONAL_ID.sub("[ID]", _FILE_NO.sub("[file number]", message))
+
+
 def detect_language(message: str, hint: str | None) -> str:
     return "ar" if re.search(r"[؀-ۿ]", message) else (hint or "en")
 
@@ -156,8 +171,6 @@ EXTRACT_TOOL = {"type": "function", "function": {
                                                          "gastroenterology", "orthopedics", "neurology"],
                              "description": "Specialty of the doctor who made the existing diagnosis (heart/valve → cardiology)"},
         "has_file": {"type": "boolean", "description": "Patient says they have (true) or don't have (false) a patient file"},
-        "file_number": {"type": "string", "description": "Patient file number, format MRN-123456"},
-        "national_id": {"type": "string", "description": "10-digit national ID or iqama number"},
         "date_of_birth": {"type": "string", "description": "Date of birth as YYYY-MM-DD"},
         "summary_confirmed": {"type": "boolean", "description": "ONLY if the assistant's last message asked the patient to confirm a "
                                                                 "summary: true if they confirmed, false if they said something is wrong"},
@@ -183,7 +196,7 @@ def _merge_facts(s: ChatSession, args: dict) -> None:
     for k in ("city", "country", "language"):
         if args.get(k):
             s.prefs[k] = args[k]
-    for k in ("has_file", "file_number", "national_id", "summary_confirmed"):
+    for k in ("has_file", "summary_confirmed"):
         if args.get(k) is not None:
             s.reception[k] = args[k]
     if args.get("date_of_birth"):
@@ -267,6 +280,8 @@ def _safety_turn(db, s, lang, result: TriageResult, trace) -> TurnResult:
 # ── The turn ──
 def run_turn(db: Session, llm: LLM, s: ChatSession, message: str, lang_hint: str | None = None) -> TurnResult:
     lang = detect_language(message, lang_hint)
+    if s.stage == "reception":
+        message = take_identifiers(s, message)
     s.history.append({"role": "user", "content": message})
     trace: list[dict] = []
 
@@ -346,6 +361,11 @@ def _reception(db, s, lang, trace) -> tuple[str | None, str]:
         p = patients.verify(db, str(ident), rec["date_of_birth"])
         for k in ("file_number", "national_id", "date_of_birth"):
             rec.pop(k, None)  # identifiers are not kept once checked
+        # ...and the answer that carried the date of birth is removed from the history too
+        for h in reversed(s.history):
+            if h["role"] == "user":
+                h["content"] = "[identity details removed]"
+                break
         if p:
             s.patient_id, s.patient_name, s.stage = p.id, patients.greeting_name(p, lang), "triage"
             trace.append({"step": "reception", "result": "verified", "patient_id": p.id})

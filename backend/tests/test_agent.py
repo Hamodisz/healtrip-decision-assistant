@@ -263,3 +263,22 @@ def test_patient_asking_for_a_doctor_not_in_the_database_gets_an_honest_answer(d
     r = run_turn(db, llm, _decided_session(), "Can I book with Dr. Ahmed Al-Zahrani at King Faisal Specialist Hospital?")
     assert r.reply.startswith("I can only book doctors in the HealTrip network")
     assert "Al-Zahrani" not in r.reply and [p["doctor_id"] for p in r.providers] == ["DOC-001"]
+
+
+def test_identity_numbers_never_reach_the_llm_or_the_stored_history(db):
+    # Audit finding: "MRN-100001" / the DOB answer stayed in history (sent to the LLM, kept 30 min).
+    s = ChatSession(facts=agent.PatientFacts(chief_complaint="chest_pain", pain_now=False))
+    seen = []
+    class Spy(FakeLLM):
+        def chat(self, messages, tools=None, tool_choice=None):
+            seen.append(str(messages))
+            return super().chat(messages, tools, tool_choice)
+    run_turn(db, Spy(facts(has_file=True), text("DOB?")), s, "yes my file is MRN-100001")
+    run_turn(db, Spy(facts(date_of_birth="1971-04-12"), text("Any shortness of breath?")), s, "12/04/1971")
+    assert s.patient_id is not None                                # still verified correctly
+    assert not any("MRN-100001" in m for m in seen)                # the LLM never saw the file number
+    assert "MRN-100001" not in str(s.history) and "12/04/1971" not in str(s.history)
+
+
+def test_hospital_inbox_requires_a_ticket(client):
+    assert client.get("/api/v1/hospital/inbox").status_code == 422
