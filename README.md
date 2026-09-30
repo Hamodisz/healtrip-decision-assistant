@@ -290,14 +290,15 @@ id PK · doctor_id FK → doctors · starts_at (timestamptz) · duration_min
 mode (in_person | remote) · status (open | held | booked) · held_until
 UNIQUE (doctor_id, starts_at) · CHECK status/mode · INDEX (doctor_id, status, starts_at)
 
-bookings (M5)                                   notifications (M5, outbox)
-────────                                        ─────────────
-
+bookings (M5)
+────────
 id PK · ticket_number UNIQUE, DEFAULT 'HT-' || year || '-' || lpad(nextval('ticket_seq'), 6, '0')
 slot_id UNIQUE FK → slots · doctor_id FK → doctors · created_at
 
-notifications: id · booking_id FK → bookings · channel (doctor_email | hospital_system)
-               recipient · subject · body · status (pending | sent | failed) · attempts · sent_at
+notifications (M5, outbox)
+─────────────
+id · booking_id FK → bookings · channel (doctor_email | hospital_system)
+recipient · subject · body · status (pending | sent | failed) · attempts · sent_at
 ```
 
 - **Cross-border by design** (`country`, `timezone`, `languages`, `currency`, `offers_remote_consult`): a patient in Riyadh can get a remote second opinion from Berlin before deciding to travel.
